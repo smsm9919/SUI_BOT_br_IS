@@ -3088,7 +3088,7 @@ if __name__ == "__main__":
     start_background_threads()
     # تشغيل خادم الويب لـ Render/Health/Metrics
     try:
-        app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
+        app.run(host="0.0.0.0", port=PORT, debug=False)
     except Exception as e:
         print(colored(f"Flask run error: {e}", "red"))
-[file content end]
+
