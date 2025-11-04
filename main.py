@@ -110,6 +110,44 @@ RF_PERIOD   = 20
 RF_MULT     = 3.5
 RF_HYST_BPS = 6.0
 
+# ===== UI ICONS =====
+IC = {
+    "hdr": "🟨",
+    "mk": "📊",
+    "ind": "🧭",
+    "rf": "🧱",
+    "bm": "📚",
+    "flow": "💧",
+    "dash": "📋",
+    "ok": "✅",
+    "warn": "⚠️",
+    "err": "🛑",
+    "buy": "🟢 BUY",
+    "sell": "🔴 SELL",
+    "flat": "⚪ FLAT",
+    "pos": "📦",
+    "pnl": "💰",
+    "bal": "👛",
+    "vote": "🗳️",
+    "strat": "🎯",
+    "gz": "🏅",
+}
+
+def _pct(x):
+    try:
+        return f"{float(x):.2f}%"
+    except:
+        return "-"
+
+def _num(x, n=4):
+    try:
+        return f"{float(x):.{n}f}"
+    except:
+        return "-"
+
+def _i(b):
+    return IC["ok"] if b else IC["warn"]
+
 # الأيقونات للوضوح
 ICON = {
     "gz": "🟡", "fvg": "🟧", "book": "📘", "flow": "💧", 
@@ -624,6 +662,54 @@ def _reset_after_close(reason, prev_side=None):
     
     logging.info(f"AFTER_CLOSE reason={reason} prev_side={prev_side}")
 
+# =================== دوال اللوج المحسنة ===================
+def print_snapshot(symbol, tf, now_utc, px, rf_val, spread_bps, rsi, adx, di_p, di_m, atr,
+                   trend_label, council_votes, rsi_ma_sig=None, evx=None, bm_imb=None, cvd=None,
+                   plan="SIT_OUT", closes_in_s=None, balance=None, risk_pct=None, compound_pnl=0.0):
+    print(f"\n{IC['hdr']}  ELITE COUNCIL • {symbol} {tf} • {now_utc}  ")
+    print(f"{IC['mk']}  MARKET ANALYSIS")
+    print(f"  $ Price={_num(px,6)} | {IC['rf']} RF={_num(rf_val,6)} | spread={_num(spread_bps,2)} bps")
+    print(f"  {IC['ind']} RSI={_num(rsi,2)}  ADX={_num(adx,2)}  +DI={_num(di_p,2)}  -DI={_num(di_m,2)}  ATR={_num(atr,6)}  Trend={trend_label}")
+    sig = []
+    if rsi_ma_sig: sig.append(f"RSI×MA={rsi_ma_sig}")
+    if evx is not None: sig.append(f"EVX={_num(evx,2)}")
+    if bm_imb is not None: sig.append(f"Imb={_num(bm_imb,2)}")
+    if cvd is not None: sig.append(f"CVD={_num(cvd,0)}")
+    if sig: print(f"  {IC['dash']} Signals: " + " | ".join(sig))
+    print(f"  {IC['vote']} Council: BUY={council_votes.get('buy',0):.1f} | SELL={council_votes.get('sell',0):.1f}")
+    if closes_in_s is not None:
+        print(f"  ⏱ Next close in ~{int(closes_in_s)}s | Plan: {plan}")
+    print(f"\n{IC['pos']}  POSITION & MANAGEMENT")
+    print(f"  {IC['bal']} Balance={_num(balance,2)}  Risk={_pct(risk_pct*100 if risk_pct else 0)}×{LEVERAGE}x  {IC['pnl']} TotalPnL={_num(compound_pnl,2)}")
+
+def log_entry(side, strategy_mode, qty, price, lev, reason, votes, rsi, adx, di_p, di_m, evx=None, rf=None, gz=None, bm_imb=None, cvd=None, balance=None, compound_pnl=0.0):
+    tag = IC['buy'] if side.upper().startswith('B') else IC['sell']
+    rz = []
+    if rf is not None: rz.append(f"RF={_num(rf,6)}")
+    if evx is not None: rz.append(f"EVX={_num(evx,2)}")
+    if gz: rz.append(f"GZ={gz.get('zone','-')} s={gz.get('score','-')}")
+    if bm_imb is not None: rz.append(f"Imb={_num(bm_imb,2)}")
+    if cvd is not None: rz.append(f"CVD={_num(cvd,0)}")
+    rs = " | ".join(rz)
+    print(
+      f"\n🚀 ENTRY | {tag} | {IC['strat']} {strategy_mode.upper()} | "
+      f"qty={_num(qty,3)}  @ {_num(price,6)}  lev={int(lev)}x | reason={reason} | "
+      f"{IC['vote']} votes: BUY={votes.get('buy',0):.1f} SELL={votes.get('sell',0):.1f}\n"
+      f"   {IC['ind']} RSI={_num(rsi,2)} ADX={_num(adx,2)} +DI={_num(di_p,2)} -DI={_num(di_m,2)}  {(' | '+rs) if rs else ''}\n"
+      f"   {IC['bal']} Eq={_num(balance,2)}  {IC['pnl']} CompoundPnL={_num(compound_pnl,2)}"
+    )
+
+def log_manage(side, upnl_pct, trail_active, be_active, partial_done, hold_tp=False, notes=None):
+    print(f"{IC['pos']} MANAGE | side={side} | uPnL={_pct(upnl_pct*100)} | trail={_i(trail_active)} be={_i(be_active)} partial={_i(partial_done)} holdTP={_i(hold_tp)}" +
+          (f" | {notes}" if notes else ""))
+
+def log_exit(side, reason, qty_closed, price, upnl_pct, session_pnl, compound_pnl, is_strict=False, is_scalp=False):
+    mode = "STRICT CLOSE" if is_strict else ("SCALP TP" if is_scalp else "EXIT")
+    print(
+      f"\n🏁 {mode} | side={side} | qty_closed={_num(qty_closed,3)} @ {_num(price,6)} | uPnL={_pct(upnl_pct*100)} | "
+      f"SessionPnL={_num(session_pnl,2)} | {IC['pnl']} CompoundPnL={_num(compound_pnl,2)} | reason={reason}"
+    )
+
 # =================== دوال التنفيذ الأساسية ===================
 def enhanced_open_market(side, qty, price, strength, reason, df, ind, trading_mode="SCALP"):
     global ENTRY_IN_PROGRESS, _last_entry_attempt_ts, PENDING_OPEN, LAST_SIGNAL_USED
@@ -705,12 +791,14 @@ def enhanced_open_market(side, qty, price, strength, reason, df, ind, trading_mo
                 "trading_mode": trading_mode
             })
             
-            print(colored(
-                f"🚀 OPEN {('🟩 LONG' if cur_side=='long' else '🟥 SHORT')} | "
-                f"qty={fmt(STATE['qty'],4)} @ {fmt(STATE['entry'])} | "
-                f"strength={fmt(strength,2)} | mode={trading_mode} | reason={reason}",
-                "green" if cur_side=='long' else 'red'
-            ))
+            # تسجيل الدخول بالشكل المحسن
+            votes = {"buy": STATE.get("votes_b", 0), "sell": STATE.get("votes_s", 0)}
+            log_entry(
+                side=cur_side, strategy_mode=trading_mode, qty=cur_qty, price=cur_entry, 
+                lev=LEVERAGE, reason=reason, votes=votes, rsi=ind.get("rsi", 50), 
+                adx=ind.get("adx", 0), di_p=ind.get("plus_di", 0), di_m=ind.get("minus_di", 0),
+                balance=bal, compound_pnl=compound_pnl
+            )
             
             return True
             
@@ -799,8 +887,14 @@ def close_market_strict(reason="STRICT"):
                 compound_pnl += pnl
                 trading_mode = STATE.get("trading_mode", "SCALP")
                 
-                print(colored(f"🔚 STRICT CLOSE {side} ({trading_mode}) reason={reason} pnl={fmt(pnl)} total={fmt(compound_pnl)}", "magenta"))
-                logging.info(f"STRICT_CLOSE {side} pnl={pnl} total={compound_pnl}")
+                # تسجيل الخروج بالشكل المحسن
+                log_exit(
+                    side=side, reason=reason, qty_closed=qty, price=px,
+                    upnl_pct=(pnl / (entry_px * qty)) * 100 if entry_px * qty > 0 else 0,
+                    session_pnl=pnl, compound_pnl=compound_pnl,
+                    is_strict=True, is_scalp=(trading_mode=="SCALP")
+                )
+                
                 _reset_after_close(reason, prev_side=side)
                 LAST_CLOSE_TS = time.time()
                 return
@@ -829,8 +923,14 @@ def close_market_strict(reason="STRICT"):
                     compound_pnl += pnl
                     trading_mode = STATE.get("trading_mode", "SCALP")
                     
-                    print(colored(f"🔚 STRICT CLOSE {side} ({trading_mode}) reason={reason} pnl={fmt(pnl)} total={fmt(compound_pnl)}", "magenta"))
-                    logging.info(f"STRICT_CLOSE {side} pnl={pnl} total={compound_pnl}")
+                    # تسجيل الخروج بالشكل المحسن
+                    log_exit(
+                        side=side, reason=reason, qty_closed=qty, price=px,
+                        upnl_pct=(pnl / (entry_px * qty)) * 100 if entry_px * qty > 0 else 0,
+                        session_pnl=pnl, compound_pnl=compound_pnl,
+                        is_strict=True, is_scalp=(trading_mode=="SCALP")
+                    )
+                    
                     _reset_after_close(reason, prev_side=side)
                     LAST_CLOSE_TS = time.time()
                     return
@@ -931,6 +1031,18 @@ def enhanced_manage_position(df, ind, info, zones, trend):
             if current_price > STATE["trail"]: 
                 close_market_strict(f"TRAIL_ATR(1.6x)")
                 return
+    
+    # تسجيل إدارة الصفقة
+    tm = STATE["trade_management"]
+    log_manage(
+        side=side, 
+        upnl_pct=rr/100,
+        trail_active=STATE.get("trail") is not None,
+        be_active=tm["break_even_moved"],
+        partial_done=tm["partial_taken"],
+        hold_tp=len(tm["targets_hit"]) > 0,
+        notes=f"ATR={_num(atr,6)}"
+    )
 
 # =================== دوال إضافية مطلوبة ===================
 def trend_context(ind: dict):
@@ -1320,6 +1432,19 @@ def elite_trade_loop():
             if reason is None and len(TRADE_TIMES) >= MAX_TRADES_PER_HOUR:
                 reason = "rate-limit: too many trades"
 
+            # طباعة السنابشوت المحسن
+            print_snapshot(
+                symbol=SYMBOL, tf=INTERVAL, now_utc=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                px=px or info.get("price"), rf_val=info.get("filter"), spread_bps=spread_bps,
+                rsi=ind.get("rsi", 50), adx=ind.get("adx", 0), di_p=ind.get("plus_di", 0), 
+                di_m=ind.get("minus_di", 0), atr=ind.get("atr", 0),
+                trend_label=trend, council_votes={"buy": STATE.get("votes_b", 0), "sell": STATE.get("votes_s", 0)},
+                rsi_ma_sig=STATE.get("rsi_ma_signal", {}).get("cross"), 
+                plan=plan.value if hasattr(plan, 'value') else str(plan),
+                closes_in_s=time_to_candle_close(df), balance=bal, risk_pct=RISK_ALLOC, 
+                compound_pnl=compound_pnl
+            )
+
             current_bar_ts = _last_closed_bar_ts(df)
             if reason is None and elite_candidate:
                 if LAST_SIGNAL_USED["side"] == elite_candidate["side"] and \
@@ -1342,8 +1467,6 @@ def elite_trade_loop():
             if POST_CHOP_BLOCK_ACTIVE and bar_ts >= POST_CHOP_BLOCK_UNTIL_BAR:
                 POST_CHOP_BLOCK_ACTIVE = False
 
-            elite_pretty_snapshot(bal, {"price": px or info["price"], **info}, ind, spread_bps, zones, reason, df, elite_candidate)
-
             if len(df) >= 2 and int(df["time"].iloc[-1]) != int(df["time"].iloc[-2]) and STATE["open"]:
                 STATE["bars"] += 1
 
@@ -1353,60 +1476,6 @@ def elite_trade_loop():
             print(colored(f"❌ elite loop error: {e}\n{traceback.format_exc()}", "red"))
             logging.error(f"elite_trade_loop error: {e}\n{traceback.format_exc()}")
             time.sleep(3)
-
-def elite_pretty_snapshot(bal, info, ind, spread_bps, zones, reason=None, df=None, elite_candidate=None):
-    left_s = time_to_candle_close(df) if df is not None else 0
-    signals = STATE.get("integrated_signals", {})
-    
-    print(colored("╔" + "═" * 118 + "╗", "cyan"))
-    print(colored(f"║ 🏆 ELITE SUI COUNCIL PRO • {SYMBOL} {INTERVAL} • {datetime.utcnow().strftime('%H:%M:%S')} UTC ║", "cyan"))
-    print(colored("╠" + "═" * 118 + "╣", "cyan"))
-    
-    print("📊 INTEGRATED MARKET ANALYSIS:")
-    print(f"   💹 Price {fmt(info.get('price'))} | RF {fmt(info.get('filter'))} | Spread {fmt(spread_bps,2)}bps")
-    print(f"   🎯 RSI={fmt(ind.get('rsi'))} ADX={fmt(ind.get('adx'))} ATR={fmt(ind.get('atr'))} | Trend: {signals.get('trend', 'N/A')}")
-    
-    signal_icons = []
-    if signals.get("fvg_bull"): signal_icons.append("🟧FVG_BULL")
-    if signals.get("fvg_bear"): signal_icons.append("🟧FVG_BEAR") 
-    if signals.get("golden_buy"): signal_icons.append("🟡GOLDEN_BUY")
-    if signals.get("golden_sell"): signal_icons.append("🟡GOLDEN_SELL")
-    if signals.get("smart_correction"): signal_icons.append("🧠SMART_CORR")
-    if signals.get("smart_retest"): signal_icons.append("🧠SMART_RETEST")
-    if signals.get("volume_boost"): signal_icons.append("💧VOL_BOOST")
-    if signals.get("candle_strength", 0) > 0.7: signal_icons.append("💪STR_CANDLE")
-    
-    if signal_icons:
-        print(f"   🚦 Signals: {', '.join(signal_icons)}")
-    
-    print(f"   🗳️ Council: B={STATE.get('votes_b',0)}/{fmt(STATE.get('score_b',0),1)} | S={STATE.get('votes_s',0)}/{fmt(STATE.get('score_s',0),1)}")
-    
-    if elite_candidate:
-        confidence = elite_candidate.get("integrated_confidence", 0)
-        print(colored(f"   🎖️ ELITE CANDIDATE: {elite_candidate['side'].upper()} (Confidence: {confidence:.1f})", "green" if elite_candidate['side'] == 'buy' else 'red'))
-    
-    print(f"   ⏱️ Next close in {left_s}s | Plan: {STATE.get('plan','SIT_OUT')}")
-    
-    print("\n💼 POSITION & MANAGEMENT:")
-    bal_line = f"Balance={fmt(bal,2)} | Risk={int(RISK_ALLOC*100)}%×{LEVERAGE}x | Total PnL={fmt(compound_pnl)}"
-    print(colored(f"   {bal_line}", "yellow"))
-    
-    if STATE["open"]:
-        side_icon = '🟩 LONG' if STATE['side'] == 'long' else '🟥 SHORT'
-        trading_mode = STATE.get("trading_mode", "SCALP")
-        tm = STATE["trade_management"]
-        
-        print(f"   {side_icon} ({trading_mode}) | Entry={fmt(STATE['entry'])} | Qty={fmt(STATE['qty'],4)}")
-        print(f"   📈 PnL={fmt(STATE['pnl'],2)} | HP={fmt(STATE['hp_pct'],2)}% | Bars={STATE['bars']}")
-        print(f"   🛡️ Stop={fmt(tm['current_stop'])} | Trail={'✅' if tm['trailing_active'] else '❌'} | BE={'✅' if tm['break_even_moved'] else '❌'}")
-        print(f"   🎯 Targets: {len(tm['targets_hit'])}/{len(tm.get('take_profit_targets', []))}")
-    else:
-        print("   ⚪ FLAT (No active position)")
-    
-    if reason:
-        print(colored(f"   ⚠️ Blocked: {reason}", "yellow"))
-    
-    print(colored("╚" + "═" * 118 + "╝", "cyan"))
 
 # =================== التشغيل الرئيسي ===================
 def start_elite_system():
