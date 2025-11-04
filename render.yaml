@@ -2,82 +2,40 @@ services:
   - type: web
     name: sui-bot-z
     env: python
-    plan: free
     region: frankfurt
+    plan: free
+    buildCommand: pip install --upgrade pip wheel setuptools && pip install -r requirements.txt
+    startCommand: python -u main.py
     autoDeploy: true
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
-    healthCheckPath: /
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.10.14
+      - key: FLASK_ENV
+        value: production
       - key: PORT
         value: 5000
-
-      # السوق/الإعدادات
+      - key: EXCHANGE
+        value: bybit
       - key: SYMBOL
-        value: SOL/USDT:USDT
+        value: SUI/USDT:USDT
       - key: INTERVAL
         value: 15m
+      - key: RF_PERIOD
+        value: 20
+      - key: RF_MULT
+        value: 3.5
       - key: LEVERAGE
         value: 10
-      - key: POSITION_MODE
-        value: oneway
       - key: RISK_ALLOC
-        value: "0.60"
-
-      # Range Filter (LIVE)
-      - key: RF_SOURCE
-        value: close
-      - key: RF_PERIOD
-        value: "20"
-      - key: RF_MULT
-        value: "3.5"
-      - key: RF_LIVE_ONLY
-        value: "true"
-      - key: RF_HYST_BPS
-        value: "6"
-
-      # مؤشرات
-      - key: RSI_LEN
-        value: "14"
-      - key: ADX_LEN
-        value: "14"
-      - key: ATR_LEN
-        value: "14"
-      - key: MAX_SPREAD_BPS
-        value: "8"
-
-      # إدارة الصفقة
-      - key: TP1_PCT_BASE
-        value: "0.40"
-      - key: TP1_CLOSE_FRAC
-        value: "0.50"
-      - key: BREAKEVEN_AFTER
-        value: "0.30"
-      - key: TRAIL_ACTIVATE_PCT
-        value: "1.20"
-      - key: ATR_TRAIL_MULT
-        value: "1.6"
-
-      # حمايات الكمية/الإغلاق
-      - key: FINAL_CHUNK_QTY
-        value: "0.2"
-      - key: RESIDUAL_MIN_QTY
-        value: "0.05"
-
-      # مضاد الفليب-فلوب/الريتم
-      - key: COOLDOWN_SEC
-        value: "90"
-      - key: MAX_TRADES_PER_HOUR
-        value: "6"
-
-      # أسرار Bybit (ضِفها من Secrets)
-      - key: BYBIT_API_KEY
-        sync: false
-      - key: BYBIT_API_SECRET
-        sync: false
-
-      # Keepalive اختياري (اتركه فاضي لو مش محتاج)
-      - key: SELF_URL
-        value: ""
+        value: 0.60
+      - key: LIVE_TRADING
+        value: true
+      - key: BOT_MODE
+        value: council
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: WEB_CONCURRENCY
+        value: "1"
+      # مفاتيح Bybit (أضِفها في Environment من لوحة Render أو هنا لو بتحب)
+      # - key: BYBIT_API_KEY
+      #   value: your_api_key_here
+      # - key: BYBIT_SECRET
+      #   value: your_secret_here
