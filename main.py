@@ -583,36 +583,28 @@ def elite_decision_making(df, ind, info, zones, candidates):
         side = candidate["side"]
         
         # Enhanced Confidence Factors
-        if (side == "buy" and signals["trend"] in ["up", "strong_up"]) or \
-           (side == "sell" and signals["trend"] in ["down", "strong_down"]):
+        if (side == "buy" and signals["trend"] in ["up", "strong_up"]) or (side == "sell" and signals["trend"] in ["down", "strong_down"]):
             confidence += 2.0
         
-        if (side == "buy" and signals["rsi_ma_cross"] == "bull") or \
-           (side == "sell" and signals["rsi_ma_cross"] == "bear"]):
+        if (side == "buy" and signals["rsi_ma_cross"] == "bull") or (side == "sell" and signals["rsi_ma_cross"] == "bear"):
             confidence += 1.5
         
-        if (side == "buy" and signals["rsi_trendZ"] and signals["rsi"] < 70) or \
-           (side == "sell" and signals["rsi_trendZ"] and signals["rsi"] > 30):
+        if (side == "buy" and signals["rsi_trendZ"] and signals["rsi"] < 70) or (side == "sell" and signals["rsi_trendZ"] and signals["rsi"] > 30):
             confidence += 1.0
         
-        if (side == "buy" and signals["fvg_bull"]) or \
-           (side == "sell" and signals["fvg_bear"]):
+        if (side == "buy" and signals["fvg_bull"]) or (side == "sell" and signals["fvg_bear"]):
             confidence += 1.0
         
-        if (side == "buy" and signals["obi"] <= -0.15) or \
-           (side == "sell" and signals["obi"] >= 0.15):
+        if (side == "buy" and signals["obi"] <= -0.15) or (side == "sell" and signals["obi"] >= 0.15):
             confidence += 1.0
         
-        if (side == "buy" and signals["sweep_down"]) or \
-           (side == "sell" and signals["sweep_up"]):
+        if (side == "buy" and signals["sweep_down"]) or (side == "sell" and signals["sweep_up"]):
             confidence += 1.5
         
-        if (side == "buy" and signals["golden_buy"]) or \
-           (side == "sell" and signals["golden_sell"]):
+        if (side == "buy" and signals["golden_buy"]) or (side == "sell" and signals["golden_sell"]):
             confidence += 2.0
         
-        if (side == "buy" and signals["smart_correction"] and signals["trend"] in ["up", "strong_up"]) or \
-           (side == "sell" and signals["smart_correction"] and signals["trend"] in ["down", "strong_down"]):
+        if (side == "buy" and signals["smart_correction"] and signals["trend"] in ["up", "strong_up"]) or (side == "sell" and signals["smart_correction"] and signals["trend"] in ["down", "strong_down"]):
             confidence += 1.5
         
         if signals["volume_boost"] and signals["candle_strength"] > 0.6:
@@ -629,43 +621,6 @@ def elite_decision_making(df, ind, info, zones, candidates):
         return best_candidate
     
     return None
-
-# =================== دوال المجلس الأساسية (المحافظة عليها) ===================
-def council_scm_votes_original(df, ind, info, zones):
-    # ... (الحفاظ على الدوال الأصلية كما هي)
-    # يتم الحفاظ على جميع دوال المجلس الأصلية
-    pass
-
-def council_scm_votes(df, ind, info, zones):
-    return integrated_council_voting(df, ind, info, zones)
-
-def council_entry(df, ind, info, zones):
-    b,b_r,s,s_r,score_b,score_s,scm_line,trend,_,_ = council_scm_votes(df, ind, info, zones)
-    STATE["scm_line"] = scm_line
-    STATE["votes_b"], STATE["votes_s"] = b, s
-    STATE["score_b"], STATE["score_s"] = score_b, score_s
-    
-    candidates=[]
-    if b >= ENTRY_MIN_VOTES and score_b >= ENTRY_MIN_SCORE:
-        candidates.append({"side":"buy","score":score_b,"votes":b,"reason":f"Council BUY {b}","trend":trend,"src":"council"})
-    if s >= ENTRY_MIN_VOTES and score_s >= ENTRY_MIN_SCORE:
-        candidates.append({"side":"sell","score":score_s,"votes":s,"reason":f"Council SELL {s}","trend":trend,"src":"council"})
-    
-    if info.get("long"):
-        candidates.append({"side":"buy","score":1.0,"votes":0,"reason":"RF_LONG","trend":trend,"src":"rf"})
-    if info.get("short"):
-        candidates.append({"side":"sell","score":1.0,"votes":0,"reason":"RF_SHORT","trend":trend,"src":"rf"})
-    
-    tb_ok, tb_score, tb_r = detect_true_bottom(df, ind)
-    if tb_ok:
-        candidates.append({"side":"buy","score":tb_score,"votes":ENTRY_MIN_VOTES+2,"reason":f"TRUE_BOTTOM","trend":trend,"src":"ttb"})
-    
-    tt_ok, tt_score, tt_r = detect_true_top(df, ind)
-    if tt_ok:
-        candidates.append({"side":"sell","score":tt_score,"votes":ENTRY_MIN_VOTES+2,"reason":f"TRUE_TOP","trend":trend,"src":"ttb"})
-    
-    candidates.sort(key=lambda x: (- (x["src"]=="council"), -x["score"]))
-    return candidates, trend
 
 # =================== دوال إضافية مطلوبة ===================
 def trend_context(ind: dict):
