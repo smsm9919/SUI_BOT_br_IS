@@ -104,6 +104,12 @@ COOLDOWN_SEC = 90
 REENTRY_COOLDOWN_SEC = 45
 MAX_TRADES_PER_HOUR = 6
 
+# RF Settings
+RF_SOURCE   = "close"
+RF_PERIOD   = 20
+RF_MULT     = 3.5
+RF_HYST_BPS = 6.0
+
 # الأيقونات للوضوح
 ICON = {
     "gz": "🟡", "fvg": "🟧", "book": "📘", "flow": "💧", 
@@ -301,6 +307,52 @@ def _best_bid_ask():
     ask = ob["asks"][0][0] if ob["asks"] else None
     return bid, ask, ob
 
+# =================== دوال RF (Range Filter) ===================
+def _rng_size(src: pd.Series, qty: float, n: int) -> pd.Series:
+    avrng = _ema((src - src.shift(1)).abs(), n)
+    wper = (n*2)-1
+    return _ema(avrng, wper) * qty
+
+def _rng_filter(src: pd.Series, rsize: pd.Series):
+    rf = [float(src.iloc[0])]
+    for i in range(1, len(src)):
+        prev = rf[-1]
+        x = float(src.iloc[i])
+        r = float(rsize.iloc[i])
+        cur = prev
+        if x - r > prev:
+            cur = x - r
+        if x + r < prev:
+            cur = x + r
+        rf.append(cur)
+    filt = pd.Series(rf, index=src.index, dtype="float64")
+    return filt + rsize, filt - rsize, filt
+
+def rf_signal_closed(df: pd.DataFrame):
+    if len(df) < RF_PERIOD + 3:
+        i = -2 if len(df) >= 2 else -1
+        price = float(df["close"].iloc[i]) if len(df) else None
+        t = int(df["time"].iloc[i]) if len(df) else int(time.time()*1000)
+        return {"time": t, "price": price or 0.0, "long": False, "short": False,
+                "filter": price or 0.0, "hi": price or 0.0, "lo": price or 0.0}
+    
+    d = df.iloc[:-1].copy()
+    src = d[RF_SOURCE].astype(float)
+    hi, lo, filt = _rng_filter(src, _rng_size(src, RF_MULT, RF_PERIOD))
+    
+    def _bps(a, b):
+        try: return abs((a-b)/b)*10000.0
+        except Exception: return 0.0
+    
+    p_prev = float(src.iloc[-1])
+    f_prev = float(filt.iloc[-1])
+    long_sig = (p_prev > f_prev and _bps(p_prev, f_prev) >= RF_HYST_BPS)
+    short_sig = (p_prev < f_prev and _bps(p_prev, f_prev) >= RF_HYST_BPS)
+    
+    return {"time": int(d["time"].iloc[-1]), "price": p_prev, "long": bool(long_sig),
+            "short": bool(short_sig), "filter": f_prev,
+            "hi": float(hi.iloc[-1]), "lo": float(lo.iloc[-1])}
+
 # =================== المؤشرات المحسنة ===================
 def wilder_ema(s: pd.Series, n: int): return s.ewm(alpha=1/n, adjust=False).mean()
 def _ema(s: pd.Series, n: int): return s.ewm(span=n, adjust=False).mean()
@@ -426,220 +478,479 @@ def classify_trading_mode(adx_value: float, rsi_sig: dict) -> tuple:
     reasons.append(f"adx<{SCALP_ADX_MIN}")
     return "SCALP", reasons
 
-# =================== النظام المتكامل الجديد ===================
-def unified_council_analysis(df, ind, info, zones):
-    """
-    تحليل موحد يجمع كل المكونات: FVG, Bookmap, Volume Flow, RSI+MA, Golden Zones
-    """
-    trend = trend_context(ind)
-    adx_val = float(ind.get("adx") or 0.0)
-    rsi_val = float(ind.get("rsi") or 50.0)
-    
-    # FVG Analysis
-    fvg_data = last_fvg(df)
-    
-    # Bookmap Analysis
-    bid, ask, ob = _best_bid_ask()
-    obi = orderbook_imbalance(ob, 10)
-    cvd_val = cvd_update(df)
-    
-    # Volume Analysis
-    volume_analysis = analyze_volume(df)
-    candle_strength = analyze_candle_strength(df, ind)
-    
-    # RSI+MA Analysis
-    rsi_sig = enhanced_rsi_ma_features(df)
-    
-    # Sweep Detection
-    eqh, eql = find_equal_highs_lows(df)
-    sweep_data = detect_sweep(df, eqh, eql)
-    
-    # Golden Zones
-    gz_buy = golden_zone_check(df, ind, "buy")
-    gz_sell = golden_zone_check(df, ind, "sell")
-    
-    # Smart System
-    smart_analysis = detect_correction_or_retest(df, ind)
-    
-    signals = {
-        "trend": trend,
-        "adx": adx_val,
-        "rsi": rsi_val,
-        "fvg_bull": fvg_data.get("bull"),
-        "fvg_bear": fvg_data.get("bear"),
-        "obi": obi,
-        "cvd": cvd_val,
-        "volume_boost": volume_analysis["volume_ok"],
-        "candle_strength": candle_strength["strength"],
-        "rsi_ma_cross": rsi_sig["cross"],
-        "rsi_trendZ": rsi_sig["trendZ_ok"],
-        "sweep_up": sweep_data["sweep_up"],
-        "sweep_down": sweep_data["sweep_down"],
-        "golden_buy": gz_buy.get("ok", False),
-        "golden_sell": gz_sell.get("ok", False),
-        "smart_correction": smart_analysis["correction_detected"],
-        "smart_retest": smart_analysis["retest_detected"]
-    }
-    
-    STATE["integrated_signals"] = signals
-    return signals
+# =================== دوال المساعدة الأساسية المطلوبة ===================
+def _last_closed_bar_ts(df):
+    if len(df) >= 2: 
+        return int(df["time"].iloc[-2])
+    return int(df["time"].iloc[-1]) if len(df) else 0
 
-def integrated_council_voting(df, ind, info, zones):
-    """
-    تصويت مجلس موحد يجمع كل الإشارات
-    """
-    signals = unified_council_analysis(df, ind, info, zones)
+def _update_trend_state(ind, info):
+    if not STATE["open"]: 
+        return
+    adx = float(ind.get("adx") or 0.0)
+    rsi = float(ind.get("rsi") or 50.0)
+    px = float(info.get("price") or STATE.get("entry") or 0.0)
     
-    b, b_r, s, s_r, score_b, score_s, scm_line, trend, _, _ = council_scm_votes_original(df, ind, info, zones)
+    if adx > (STATE.get("peak_adx") or adx): 
+        STATE["peak_adx"] = adx
+    if rsi > (STATE.get("rsi_peak") or rsi): 
+        STATE["rsi_peak"] = rsi
+    if rsi < (STATE.get("rsi_trough") or rsi): 
+        STATE["rsi_trough"] = rsi
     
-    # Enhanced FVG Integration
-    if signals["fvg_bull"]:
-        b += 2
-        score_b += 1.0
-        b_r.append("fvg_bull_confirmed")
-    if signals["fvg_bear"]:
-        s += 2  
-        score_s += 1.0
-        s_r.append("fvg_bear_confirmed")
-    
-    # Enhanced Bookmap Integration
-    if signals["obi"] <= -0.15:
-        b += 2
-        score_b += 1.0
-        b_r.append("strong_bid_pressure")
-    if signals["obi"] >= 0.15:
-        s += 2
-        score_s += 1.0  
-        s_r.append("strong_ask_pressure")
-    
-    # Enhanced Volume Flow
-    if signals["volume_boost"] and signals["candle_strength"] > 0.7:
-        if b > s:
-            b += 1
-            score_b += 0.5
-            b_r.append("volume_flow_bull")
-        else:
-            s += 1
-            score_s += 0.5
-            s_r.append("volume_flow_bear")
-    
-    # Enhanced Smart System
-    if signals["smart_correction"]:
-        if signals["trend"] in ["up", "strong_up"]:
-            b += 2
-            score_b += 1.5
-            b_r.append("smart_correction_bull")
-        elif signals["trend"] in ["down", "strong_down"]:
-            s += 2
-            score_s += 1.5
-            s_r.append("smart_correction_bear")
-    
-    if signals["smart_retest"]:
-        b += 1
-        s += 1
-        score_b += 0.5
-        score_s += 0.5
-        b_r.append("smart_retest_opportunity")
-        s_r.append("smart_retest_opportunity")
-    
-    # RSI+MA Enhancement
-    rsi_sig = enhanced_rsi_ma_features(df)
-    if rsi_sig["cross"] == "bull" and rsi_sig["rsi"] < 70:
-        b += RSI_CROSS_BOOST_VOTES
-        score_b += RSI_CROSS_BOOST_SCORE
-        b_r.append("rsi_cross_bull")
-    elif rsi_sig["cross"] == "bear" and rsi_sig["rsi"] > 30:
-        s += RSI_CROSS_BOOST_VOTES  
-        score_s += RSI_CROSS_BOOST_SCORE
-        s_r.append("rsi_cross_bear")
+    if STATE["side"] == "long":
+        if px > (STATE.get("peak_price") or px): 
+            STATE["peak_price"] = px
+    else:
+        if px < (STATE.get("trough_price") or px): 
+            STATE["trough_price"] = px
 
-    if rsi_sig["trendZ_ok"]:
-        if rsi_sig["trendZ_dir"] == "up":
-            b += RSI_TRENDZ_BOOST_VOTES
-            score_b += RSI_TRENDZ_BOOST_SCORE
-            b_r.append("rsi_trendZ_up")
-        else:
-            s += RSI_TRENDZ_BOOST_VOTES
-            score_s += RSI_TRENDZ_BOOST_SCORE  
-            s_r.append("rsi_trendZ_down")
-
-    scm_line += " | ELITE_INTEGRATED"
-    return b, b_r, s, s_r, score_b, score_s, scm_line, trend, False, False
-
-def elite_decision_making(df, ind, info, zones, candidates):
-    """
-    اتخاذ قرار النخبة باستخدام كل المكونات المتكاملة
-    """
-    if not candidates:
+def _price_band(side: str, px: float, max_bps: float):
+    if px is None: 
         return None
+    if side == "buy":  
+        return px * (1 + max_bps/10000.0)
+    else:              
+        return px * (1 - max_bps/10000.0)
+
+def _bybit_reduceonly_reject(err: Exception) -> bool:
+    m = str(err).lower()
+    return ("-110017" in m) or ("reduce-only order has same side with current position" in m)
+
+def _params_open(side):
+    return {"positionSide": "BOTH", "reduceOnly": False, "positionIdx": 0}
+
+def _params_close():
+    return {"positionSide": "BOTH", "reduceOnly": True, "positionIdx": 0}
+
+def _cancel_symbol_orders():
+    try:
+        if MODE_LIVE:
+            ex.cancel_all_orders(SYMBOL)
+            print(colored("🧹 canceled all open orders for symbol", "yellow"))
+    except Exception as e:
+        print(colored(f"⚠️ cancel_all_orders warn: {e}", "yellow"))
+
+def _read_position():
+    try:
+        poss = with_retry(lambda: ex.fetch_positions(params={"type": "swap"}))
+        for p in poss:
+            sym = (p.get("symbol") or p.get("info",{}).get("symbol") or "")
+            if not _sym_match(sym, SYMBOL):
+                continue
+            
+            ccxt_side = (p.get("side") or "").strip().lower()
+            raw_side = (p.get("info",{}).get("side") or "").strip().lower()
+            q_fields = [p.get("contracts"), p.get("positionAmt"), p.get("size"), p.get("info",{}).get("size")]
+            q_first = next((float(x) for x in q_fields if x not in (None, "", 0)), 0.0)
+            
+            side = None
+            if ccxt_side in ("long", "short"):
+                side = ccxt_side
+            elif raw_side in ("buy", "sell"):
+                side = "long" if raw_side == "buy" else "short"
+            elif q_first != 0:
+                side = "long" if q_first > 0 else "short"
+            else:
+                continue
+            
+            qty = abs(q_first) if q_first != 0 else 0.0
+            if qty <= 0:
+                qty = abs(next((float(x) for x in q_fields if isinstance(x,(int,float)) and float(x) != 0), 0.0))
+            if qty <= 0:
+                continue
+            
+            entry = float(p.get("entryPrice") or p.get("info",{}).get("avgEntryPrice") or 0.0) or 0.0
+            logging.info(f"READ_POS → side={side} qty={qty} entry={entry} (ccxt_side={ccxt_side} raw_side={raw_side} q={q_first})")
+            return qty, side, entry
+    except Exception as e:
+        logging.error(f"_read_position error: {e}", exc_info=True)
+    return 0.0, None, None
+
+def reconcile_state():
+    exch_qty, exch_side, exch_entry = _read_position()
+    if (exch_qty or 0.0) <= 0:
+        if STATE.get("open"):
+            print(colored("🧹 RECONCILE: exchange flat, resetting local state.", "yellow"))
+            _reset_after_close("RECONCILE_FLAT", prev_side=STATE.get("side"))
+        return
     
-    signals = unified_council_analysis(df, ind, info, zones)
+    changed = (not STATE.get("open")) or \
+              (STATE.get("side") != exch_side) or \
+              (abs((STATE.get("qty") or 0) - exch_qty) > (LOT_STEP or 0.0)) or \
+              (abs((STATE.get("entry") or 0) - exch_entry) / max(exch_entry, 1e-9) > 0.001)
     
-    best_candidate = None
-    max_confidence = 0
+    if changed:
+        STATE.update({
+            "open": True, 
+            "side": exch_side, 
+            "entry": float(exch_entry), 
+            "qty": safe_qty(exch_qty)
+        })
+        print(colored(f"🔄 RECONCILE: synced — {exch_side} qty={fmt(exch_qty,4)} @ {fmt(exch_entry)}", "cyan"))
+
+def _reset_after_close(reason, prev_side=None):
+    global LAST_CLOSE_BAR_TS, POST_CHOP_BLOCK_ACTIVE, POST_CHOP_BLOCK_UNTIL_BAR
+    prev_side = prev_side or STATE.get("side")
     
-    for candidate in candidates:
-        confidence = candidate.get("score", 0)
-        side = candidate["side"]
-        
-        # Enhanced Confidence Factors
-        if (side == "buy" and signals["trend"] in ["up", "strong_up"]) or (side == "sell" and signals["trend"] in ["down", "strong_down"]):
-            confidence += 2.0
-        
-        if (side == "buy" and signals["rsi_ma_cross"] == "bull") or (side == "sell" and signals["rsi_ma_cross"] == "bear"):
-            confidence += 1.5
-        
-        if (side == "buy" and signals["rsi_trendZ"] and signals["rsi"] < 70) or (side == "sell" and signals["rsi_trendZ"] and signals["rsi"] > 30):
-            confidence += 1.0
-        
-        if (side == "buy" and signals["fvg_bull"]) or (side == "sell" and signals["fvg_bear"]):
-            confidence += 1.0
-        
-        if (side == "buy" and signals["obi"] <= -0.15) or (side == "sell" and signals["obi"] >= 0.15):
-            confidence += 1.0
-        
-        if (side == "buy" and signals["sweep_down"]) or (side == "sell" and signals["sweep_up"]):
-            confidence += 1.5
-        
-        if (side == "buy" and signals["golden_buy"]) or (side == "sell" and signals["golden_sell"]):
-            confidence += 2.0
-        
-        if (side == "buy" and signals["smart_correction"] and signals["trend"] in ["up", "strong_up"]) or (side == "sell" and signals["smart_correction"] and signals["trend"] in ["down", "strong_down"]):
-            confidence += 1.5
-        
-        if signals["volume_boost"] and signals["candle_strength"] > 0.6:
-            confidence += 1.0
-        
-        if confidence > max_confidence:
-            max_confidence = confidence
-            best_candidate = candidate.copy()
-            best_candidate["integrated_confidence"] = confidence
-            best_candidate["signals"] = signals
+    STATE.update({
+        "open": False, "side": None, "entry": None, "qty": 0.0,
+        "pnl": 0.0, "bars": 0, "trail": None,
+        "hp_pct": 0.0, "strength": 0.0, "entry_strength": 0.0,
+        "peak_adx": 0.0, "rsi_peak": 50.0, "rsi_trough": 50.0,
+        "peak_price": 0.0, "trough_price": 0.0,
+        "opp_rf_count": 0, "scm_line": "", "chop_flag": False,
+        "trade_management": {
+            "partial_taken": False,
+            "targets_hit": [],
+            "break_even_moved": False,
+            "trailing_active": False,
+            "initial_stop": None,
+            "current_stop": None,
+            "trading_mode": "SCALP",
+        },
+        "position_size": 0.0,
+        "remaining_size": 0.0,
+        "trading_mode": "SCALP",
+        "rsi_ma_signal": {},
+        "elite_confidence": 0.0,
+        "integrated_signals": {}
+    })
     
-    if best_candidate and max_confidence >= ELITE_MIN_CONFIDENCE:
-        STATE["elite_confidence"] = max_confidence
-        return best_candidate
+    LAST_CLOSE_BAR_TS = LAST_DECISION_BAR_TS
+    if reason.startswith("CHOP"):
+        POST_CHOP_BLOCK_ACTIVE = True
+        POST_CHOP_BLOCK_UNTIL_BAR = (LAST_DECISION_BAR_TS or 0) + 2
     
-    return None
+    logging.info(f"AFTER_CLOSE reason={reason} prev_side={prev_side}")
+
+# =================== دوال التنفيذ الأساسية ===================
+def enhanced_open_market(side, qty, price, strength, reason, df, ind, trading_mode="SCALP"):
+    global ENTRY_IN_PROGRESS, _last_entry_attempt_ts, PENDING_OPEN, LAST_SIGNAL_USED
+    
+    if _now() - _last_entry_attempt_ts < ENTRY_GUARD_WINDOW_SEC:
+        print(colored("⏸️ entry guard window — skip", "yellow"))
+        return False
+    
+    if ENTRY_LOCK.locked() or ENTRY_IN_PROGRESS or PENDING_OPEN:
+        print(colored("⏸️ entry in progress/pending — skip", "yellow"))
+        return False
+    
+    with ENTRY_LOCK:
+        ENTRY_IN_PROGRESS = True
+        PENDING_OPEN = True
+        
+        try:
+            ex_qty, ex_side, _ = _read_position()
+            if ex_qty and ex_qty > 0:
+                print(colored(f"⛔ exchange already has position ({ex_side}) — skip open", "red"))
+                return False
+            
+            _cancel_symbol_orders()
+            bal = balance_usdt()
+            px = float(price or price_now() or 0.0)
+            
+            if qty <= 0 or (LOT_MIN and qty < LOT_MIN):
+                print(colored(f"❌ skip open (qty too small) — bal={fmt(bal,2)} px={fmt(px)} q={qty}", "red"))
+                return False
+            
+            sp = orderbook_spread_bps()
+            if sp is not None and sp > SPREAD_HARD_BPS:
+                print(colored(f"⛔ hard spread guard: {fmt(sp,2)}bps > {SPREAD_HARD_BPS}", "red"))
+                return False
+            
+            link = _order_link("ENT")
+            if MODE_LIVE:
+                ex.create_order(SYMBOL, "market", side, qty, None, {**_params_open(side), "orderLinkId": link})
+            else:
+                print(colored(f"[PAPER] create_order market {side} {qty}", "cyan"))
+            
+            time.sleep(0.45)
+            cur_qty, cur_side, cur_entry = _read_position()
+            
+            if not cur_qty or cur_qty <= 0:
+                print(colored("❌ open failed — no position filled", "red"))
+                return False
+            
+            expected_side = "long" if side == "buy" else "short"
+            if cur_side not in ("long", "short") or cur_side != expected_side:
+                print(colored(f"❌ side mismatch after open (expected {expected_side}, got {cur_side}) — strict close", "red"))
+                close_market_strict("SIDE_MISMATCH_AFTER_OPEN")
+                return False
+            
+            # إعداد نظام إدارة الصفقة
+            atr = float(ind.get("atr", 0))
+            setup_trade_management(float(cur_entry), atr, cur_side, strength, trading_mode)
+            
+            STATE.update({
+                "open": True, "side": cur_side, "entry": float(cur_entry),
+                "qty": safe_qty(cur_qty), "remaining_size": safe_qty(cur_qty),
+                "pnl": 0.0, "bars": 0, "trail": None,
+                "hp_pct": 0.0, "strength": float(strength),
+                "entry_strength": float(strength),
+                "peak_adx": 0.0, "rsi_peak": 50.0, "rsi_trough": 50.0,
+                "peak_price": float(cur_entry), "trough_price": float(cur_entry),
+                "opp_rf_count": 0, "chop_flag": False,
+                "trading_mode": trading_mode
+            })
+            
+            TRADE_TIMES.append(time.time())
+            _last_entry_attempt_ts = _now()
+            
+            LAST_SIGNAL_USED.update({
+                "side": side,
+                "bar_ts": _last_closed_bar_ts(fetch_ohlcv()),
+                "src": reason.split(" ")[0] if reason else "unknown",
+                "strength": float(strength),
+                "trading_mode": trading_mode
+            })
+            
+            print(colored(
+                f"🚀 OPEN {('🟩 LONG' if cur_side=='long' else '🟥 SHORT')} | "
+                f"qty={fmt(STATE['qty'],4)} @ {fmt(STATE['entry'])} | "
+                f"strength={fmt(strength,2)} | mode={trading_mode} | reason={reason}",
+                "green" if cur_side=='long' else 'red'
+            ))
+            
+            return True
+            
+        except Exception as e:
+            print(colored(f"❌ open error: {e}", "red"))
+            logging.error(f"open_market error: {e}", exc_info=True)
+            return False
+        finally:
+            ENTRY_IN_PROGRESS = False
+            PENDING_OPEN = False
+
+def close_market_strict(reason="STRICT"):
+    global compound_pnl, LAST_CLOSE_TS, CLOSE_IN_PROGRESS, _last_close_attempt_ts, LAST_CLOSE_BAR_TS
+    
+    if CLOSE_LOCK.locked() or CLOSE_IN_PROGRESS:
+        print(colored("⏸️ close in progress — skip", "yellow"))
+        return
+    
+    if _now() - _last_close_attempt_ts < CLOSE_GUARD_WINDOW_SEC:
+        print(colored("⏸️ close guard window — skip", "yellow"))
+        return
+    
+    with CLOSE_LOCK:
+        CLOSE_IN_PROGRESS = True
+        _last_close_attempt_ts = _now()
+        
+        try:
+            exch_qty, exch_side, exch_entry = _read_position()
+            if exch_qty <= 0:
+                if STATE.get("open"):
+                    _reset_after_close(reason, prev_side=STATE.get("side"))
+                    LAST_CLOSE_TS = time.time()
+                return
+            
+            _cancel_symbol_orders()
+            side_to_close = "sell" if (exch_side == "long") else "buy"
+            qty_to_close = safe_qty(exch_qty)
+            
+            bid, ask, _ob = None, None, None
+            try:
+                bid, ask, _ob = _best_bid_ask()
+            except Exception: 
+                pass
+            
+            ref = (ask if exch_side == "long" else bid) or price_now() or STATE.get("entry")
+            band_px = _price_band(side_to_close, ref, 35.0)  # MAX_SLIP_CLOSE_BPS
+            
+            link = _order_link("CLS")
+            
+            try:
+                if MODE_LIVE and band_px:
+                    params = _params_close()
+                    params.update({"timeInForce": "IOC", "orderLinkId": link})
+                    ex.create_order(SYMBOL, "limit", side_to_close, qty_to_close, band_px, params)
+                else:
+                    print(colored(f"[PAPER] limit-IOC reduceOnly {side_to_close} {qty_to_close} @ {fmt(band_px)}", "cyan"))
+            except Exception as e1:
+                print(colored(f"⚠️ limit IOC close err: {e1}", "yellow"))
+                try:
+                    if MODE_LIVE:
+                        params = _params_close()
+                        params.update({"orderLinkId": link})
+                        ex.create_order(SYMBOL, "market", side_to_close, qty_to_close, None, params)
+                    else:
+                        print(colored(f"[PAPER] market reduceOnly {side_to_close} {qty_to_close}", "cyan"))
+                except Exception as e2:
+                    if _bybit_reduceonly_reject(e2):
+                        print(colored("↪️ reduceOnly rejected — market w/o reduceOnly (safe after cancel)", "yellow"))
+                        params = {"positionSide": "BOTH", "reduceOnly": False, "positionIdx": 0, "timeInForce": "IOC", "orderLinkId": link}
+                        if MODE_LIVE:
+                            ex.create_order(SYMBOL, "market", side_to_close, qty_to_close, None, params)
+                        else:
+                            print(colored(f"[PAPER] market Fallback {side_to_close} {qty_to_close}", "cyan"))
+                    else:
+                        raise e2
+            
+            time.sleep(1.0)
+            left_qty, _, _ = _read_position()
+            
+            if left_qty <= 0:
+                px = price_now() or ref
+                entry_px = STATE.get("entry") or exch_entry or px
+                side = STATE.get("side") or exch_side
+                qty = exch_qty
+                pnl = (px - entry_px) * qty * (1 if side == "long" else -1)
+                compound_pnl += pnl
+                trading_mode = STATE.get("trading_mode", "SCALP")
+                
+                print(colored(f"🔚 STRICT CLOSE {side} ({trading_mode}) reason={reason} pnl={fmt(pnl)} total={fmt(compound_pnl)}", "magenta"))
+                logging.info(f"STRICT_CLOSE {side} pnl={pnl} total={compound_pnl}")
+                _reset_after_close(reason, prev_side=side)
+                LAST_CLOSE_TS = time.time()
+                return
+            
+            # Retry logic for remaining position
+            for _ in range(3):
+                qty_to_close = safe_qty(left_qty)
+                try:
+                    if MODE_LIVE:
+                        params = _params_close()
+                        params.update({"timeInForce": "IOC", "orderLinkId": _order_link("CLS")})
+                        ex.create_order(SYMBOL, "market", side_to_close, qty_to_close, None, params)
+                    else:
+                        print(colored(f"[PAPER] market retry reduceOnly {side_to_close} {qty_to_close}", "cyan"))
+                except Exception as e:
+                    print(colored(f"⚠️ market close retry err: {e}", "yellow"))
+                
+                time.sleep(0.8)
+                left_qty, _, _ = _read_position()
+                if left_qty <= 0:
+                    px = price_now() or ref
+                    entry_px = STATE.get("entry") or exch_entry or px
+                    side = STATE.get("side") or exch_side
+                    qty = exch_qty
+                    pnl = (px - entry_px) * qty * (1 if side == "long" else -1)
+                    compound_pnl += pnl
+                    trading_mode = STATE.get("trading_mode", "SCALP")
+                    
+                    print(colored(f"🔚 STRICT CLOSE {side} ({trading_mode}) reason={reason} pnl={fmt(pnl)} total={fmt(compound_pnl)}", "magenta"))
+                    logging.info(f"STRICT_CLOSE {side} pnl={pnl} total={compound_pnl}")
+                    _reset_after_close(reason, prev_side=side)
+                    LAST_CLOSE_TS = time.time()
+                    return
+            
+            print(colored("❌ STRICT CLOSE FAILED — residual position still exists", "red"))
+            
+        except Exception as e:
+            print(colored(f"❌ close error: {e}", "red"))
+            logging.error(f"close_market_strict error: {e}", exc_info=True)
+        finally:
+            CLOSE_IN_PROGRESS = False
+
+# =================== دوال إدارة الصفقات ===================
+def setup_trade_management(entry_price, atr, side, strength, trading_mode="SCALP"):
+    if trading_mode == "TREND":
+        tp_targets = [
+            {"target": 0.8, "percentage": 0.30},
+            {"target": 1.8, "percentage": 0.40}, 
+            {"target": 3.0, "percentage": 0.30}
+        ]
+        break_even_at = TREND_BE_AT
+        stop_multiplier = 1.8
+    else:  # SCALP
+        tp_targets = [
+            {"target": 0.4, "percentage": 0.50},
+            {"target": 0.8, "percentage": 0.50}
+        ]
+        break_even_at = SCALP_BE_AT  
+        stop_multiplier = 1.2
+    
+    stop_distance = atr * stop_multiplier
+    if side == "long":
+        initial_stop = entry_price - stop_distance
+    else:
+        initial_stop = entry_price + stop_distance
+    
+    STATE["trade_management"].update({
+        "partial_taken": False,
+        "targets_hit": [],
+        "break_even_moved": False,
+        "trailing_active": False,
+        "initial_stop": initial_stop,
+        "current_stop": initial_stop,
+        "take_profit_targets": tp_targets,
+        "break_even_at": break_even_at,
+        "trail_start_at": 1.2 if trading_mode == "TREND" else 0.6,
+        "trading_mode": trading_mode
+    })
+    
+    STATE["trading_mode"] = trading_mode
+    
+    print(colored(
+        f"🎯 إدارة {trading_mode}: وقف {fmt(initial_stop)} | ATR {fmt(atr)} | "
+        f"BE@{break_even_at}% | StopMult={stop_multiplier}", 
+        "cyan"
+    ))
+
+def check_stop_loss(current_price, side):
+    tm = STATE["trade_management"]
+    stop_price = tm["current_stop"]
+    
+    if side == "long" and current_price <= stop_price:
+        close_market_strict(f"STOP_LOSS {fmt(stop_price)} {STATE['trading_mode']}")
+        return True
+    elif side == "short" and current_price >= stop_price:
+        close_market_strict(f"STOP_LOSS {fmt(stop_price)} {STATE['trading_mode']}")
+        return True
+    
+    return False
+
+def enhanced_manage_position(df, ind, info, zones, trend):
+    if not STATE["open"] or STATE["qty"] <= 0:
+        return
+    
+    current_price = info["price"]
+    entry_price = STATE["entry"]
+    side = STATE["side"]
+    atr = float(ind.get("atr", 0))
+    
+    # 1. التحقق من وقف الخسارة
+    if check_stop_loss(current_price, side):
+        return
+    
+    # 2. إدارة أساسية للصفقة
+    rr = (current_price - entry_price) / entry_price * 100 * (1 if side == "long" else -1)
+    
+    if rr >= TRAIL_START_AT and atr > 0:
+        gap = atr * 1.6  # ATR_TRAIL_MULT
+        if side == "long":
+            new_trail = current_price - gap
+            STATE["trail"] = max(STATE["trail"] or new_trail, new_trail)
+            if current_price < STATE["trail"]: 
+                close_market_strict(f"TRAIL_ATR(1.6x)")
+                return
+        else:
+            new_trail = current_price + gap
+            STATE["trail"] = min(STATE["trail"] or new_trail, new_trail)
+            if current_price > STATE["trail"]: 
+                close_market_strict(f"TRAIL_ATR(1.6x)")
+                return
 
 # =================== دوال إضافية مطلوبة ===================
 def trend_context(ind: dict):
-    adx=float(ind.get("adx") or 0.0)
-    pdi=float(ind.get("plus_di") or 0.0)
-    mdi=float(ind.get("minus_di") or 0.0)
-    macd_hist=float(ind.get("macd_hist") or 0.0)
+    adx = float(ind.get("adx") or 0.0)
+    pdi = float(ind.get("plus_di") or 0.0)
+    mdi = float(ind.get("minus_di") or 0.0)
+    macd_hist = float(ind.get("macd_hist") or 0.0)
     
-    if adx>=30.0 and abs(pdi-mdi)>=10.0:
-        return "strong_up" if pdi>mdi else "strong_down"
-    if pdi>mdi and macd_hist > 0.001:
+    if adx >= 30.0 and abs(pdi - mdi) >= 10.0:
+        return "strong_up" if pdi > mdi else "strong_down"
+    if pdi > mdi and macd_hist > 0.001:
         return "up"
-    if mdi>pdi and macd_hist < -0.001:
+    if mdi > pdi and macd_hist < -0.001:
         return "down"
     return "sideways"
 
 def orderbook_imbalance(ob, depth=10):
     try:
-        asks = ob["asks"][:depth]; bids = ob["bids"][:depth]
+        asks = ob["asks"][:depth]
+        bids = ob["bids"][:depth]
         sum_ask = sum(ask[1] for ask in asks)
         sum_bid = sum(bid[1] for bid in bids)
         tot = max(sum_ask + sum_bid, 1e-9)
@@ -649,11 +960,16 @@ def orderbook_imbalance(ob, depth=10):
         return 0.0
 
 def cvd_update(df: pd.DataFrame):
-    if len(df) < 2: return STATE.get("cvd",0.0)
-    o=float(df["open"].iloc[-1]); c=float(df["close"].iloc[-1]); v=float(df["volume"].iloc[-1])
-    delta = (1 if c>o else (-1 if c<o else 0)) * v
+    if len(df) < 2: 
+        return STATE.get("cvd", 0.0)
+    
+    o = float(df["open"].iloc[-1])
+    c = float(df["close"].iloc[-1])
+    v = float(df["volume"].iloc[-1])
+    
+    delta = (1 if c > o else (-1 if c < o else 0)) * v
     prev = STATE.get("cvd", 0.0)
-    cvd = prev + (delta - prev)/10
+    cvd = prev + (delta - prev) / 10
     STATE["cvd"] = cvd
     return cvd
 
@@ -686,9 +1002,11 @@ def analyze_candle_strength(df: pd.DataFrame, ind: dict) -> Dict[str, float]:
         return {"strength": 0.0, "momentum": 0.0, "volume_power": 0.0}
     
     d = df.iloc[:-1]
-    o=float(d["open"].iloc[-1]); c=float(d["close"].iloc[-1])
-    h=float(d["high"].iloc[-1]); l=float(d["low"].iloc[-1])
-    v=float(d["volume"].iloc[-1])
+    o = float(d["open"].iloc[-1])
+    c = float(d["close"].iloc[-1])
+    h = float(d["high"].iloc[-1])
+    l = float(d["low"].iloc[-1])
+    v = float(d["volume"].iloc[-1])
     
     avg_volume = df['volume'].rolling(20).mean().iloc[-1] if len(df) > 20 else v
     
@@ -736,20 +1054,180 @@ def compute_size(balance, price):
     if not balance or balance <= 0 or not price or price <= 0:
         print(colored("⚠️ cannot compute size (missing balance/price)", "yellow"))
         return 0.0
-    equity = float(balance); px = max(float(price), 1e-9); buffer = 0.97
+    
+    equity = float(balance)
+    px = max(float(price), 1e-9)
+    buffer = 0.97
     notional = equity * RISK_ALLOC * LEVERAGE * buffer
     raw_qty = notional / px
     q_norm = safe_qty(raw_qty)
+    
     if q_norm <= 0:
         lot_min = LOT_MIN or 0.1
         need = (lot_min * px) / (LEVERAGE * RISK_ALLOC * buffer)
         print(colored(f"⚠️ balance {fmt(balance,2)} too small — need ≥ {fmt(need,2)} USDT for min lot {lot_min}", "yellow"))
         return 0.0
+    
     return q_norm
+
+# =================== دوال المجلس الأساسية (مبسطة) ===================
+def council_scm_votes_original(df, ind, info, zones):
+    # إرجاع قيم افتراضية للاختبار
+    b, s = 0, 0
+    b_r, s_r = [], []
+    score_b, score_s = 0.0, 0.0
+    scm_line = "SCM | BASIC"
+    trend = trend_context(ind)
+    
+    return b, b_r, s, s_r, score_b, score_s, scm_line, trend, False, False
+
+def last_fvg(df):
+    return {"bull": None, "bear": None}
+
+def detect_sweep(df, eqh, eql):
+    return {"sweep_up": False, "sweep_down": False}
+
+def find_equal_highs_lows(df):
+    return None, None
+
+def golden_zone_check(df, ind, side):
+    return {"ok": False, "score": 0.0, "reasons": [], "zone": None}
+
+def detect_correction_or_retest(df, ind):
+    return {
+        "correction_detected": False,
+        "retest_detected": False,
+        "fib_level": None,
+        "trend_direction": "neutral",
+        "strength": 0.0,
+        "reasons": []
+    }
+
+def detect_true_bottom(df, ind):
+    return False, 0.0, []
+
+def detect_true_top(df, ind):
+    return False, 0.0, []
+
+def decide_plan(df, ind, info, zones):
+    class Plan(Enum):
+        TREND_RIDE = "TREND_RIDE"
+        REVERSAL_SNIPE = "REVERSAL_SNIPE"
+        CHOP_HARVEST = "CHOP_HARVEST"
+        BREAKOUT_ONLY = "BREAKOUT_ONLY"
+        SIT_OUT = "SIT_OUT"
+    
+    return Plan.SIT_OUT, ["no_analysis"]
+
+# =================== النظام المتكامل الجديد ===================
+def unified_council_analysis(df, ind, info, zones):
+    """
+    تحليل موحد يجمع كل المكونات
+    """
+    trend = trend_context(ind)
+    adx_val = float(ind.get("adx") or 0.0)
+    rsi_val = float(ind.get("rsi") or 50.0)
+    
+    # تحليلات أساسية
+    fvg_data = last_fvg(df)
+    bid, ask, ob = _best_bid_ask()
+    obi = orderbook_imbalance(ob, 10)
+    cvd_val = cvd_update(df)
+    volume_analysis = analyze_volume(df)
+    candle_strength = analyze_candle_strength(df, ind)
+    rsi_sig = enhanced_rsi_ma_features(df)
+    eqh, eql = find_equal_highs_lows(df)
+    sweep_data = detect_sweep(df, eqh, eql)
+    gz_buy = golden_zone_check(df, ind, "buy")
+    gz_sell = golden_zone_check(df, ind, "sell")
+    smart_analysis = detect_correction_or_retest(df, ind)
+    
+    signals = {
+        "trend": trend,
+        "adx": adx_val,
+        "rsi": rsi_val,
+        "fvg_bull": fvg_data.get("bull"),
+        "fvg_bear": fvg_data.get("bear"),
+        "obi": obi,
+        "cvd": cvd_val,
+        "volume_boost": volume_analysis["volume_ok"],
+        "candle_strength": candle_strength["strength"],
+        "rsi_ma_cross": rsi_sig["cross"],
+        "rsi_trendZ": rsi_sig["trendZ_ok"],
+        "sweep_up": sweep_data["sweep_up"],
+        "sweep_down": sweep_data["sweep_down"],
+        "golden_buy": gz_buy.get("ok", False),
+        "golden_sell": gz_sell.get("ok", False),
+        "smart_correction": smart_analysis["correction_detected"],
+        "smart_retest": smart_analysis["retest_detected"]
+    }
+    
+    STATE["integrated_signals"] = signals
+    return signals
+
+def integrated_council_voting(df, ind, info, zones):
+    """
+    تصويت مجلس موحد
+    """
+    signals = unified_council_analysis(df, ind, info, zones)
+    
+    b, b_r, s, s_r, score_b, score_s, scm_line, trend, _, _ = council_scm_votes_original(df, ind, info, zones)
+    
+    # تعزيزات إضافية
+    if signals["fvg_bull"]:
+        b += 2
+        score_b += 1.0
+        b_r.append("fvg_bull")
+    
+    if signals["volume_boost"]:
+        b += 1
+        s += 1
+        score_b += 0.5
+        score_s += 0.5
+        b_r.append("volume_boost")
+        s_r.append("volume_boost")
+    
+    scm_line += " | ELITE_INTEGRATED"
+    return b, b_r, s, s_r, score_b, score_s, scm_line, trend, False, False
+
+def elite_decision_making(df, ind, info, zones, candidates):
+    """
+    اتخاذ قرار النخبة
+    """
+    if not candidates:
+        return None
+    
+    signals = unified_council_analysis(df, ind, info, zones)
+    
+    best_candidate = None
+    max_confidence = 0
+    
+    for candidate in candidates:
+        confidence = candidate.get("score", 0)
+        side = candidate["side"]
+        
+        # تعزيزات الثقة
+        if (side == "buy" and signals["trend"] in ["up", "strong_up"]) or (side == "sell" and signals["trend"] in ["down", "strong_down"]):
+            confidence += 2.0
+        
+        if signals["volume_boost"]:
+            confidence += 1.0
+        
+        if confidence > max_confidence:
+            max_confidence = confidence
+            best_candidate = candidate.copy()
+            best_candidate["integrated_confidence"] = confidence
+            best_candidate["signals"] = signals
+    
+    if best_candidate and max_confidence >= ELITE_MIN_CONFIDENCE:
+        STATE["elite_confidence"] = max_confidence
+        return best_candidate
+    
+    return None
 
 def execute_elite_trade(candidate, df, ind, info):
     """
-    تنفيذ صفقة النخبة مع كل التحليلات المتكاملة
+    تنفيذ صفقة النخبة
     """
     if not candidate:
         return False
@@ -768,36 +1246,14 @@ def execute_elite_trade(candidate, df, ind, info):
         print(colored("❌ حجم مركز غير صالح", "red"))
         return False
     
-    reason_parts = []
-    reason_parts.append(candidate.get("reason", ""))
-    reason_parts.append(f"CONF:{confidence:.1f}")
-    reason_parts.append(f"MODE:{trading_mode}")
-    
-    if signals.get("fvg_bull") and side == "buy":
-        reason_parts.append("FVG_BULL")
-    if signals.get("fvg_bear") and side == "sell":
-        reason_parts.append("FVG_BEAR")
-    if signals.get("golden_buy") and side == "buy":
-        reason_parts.append("GOLDEN_BUY")
-    if signals.get("golden_sell") and side == "sell":
-        reason_parts.append("GOLDEN_SELL")
-    if signals.get("smart_correction"):
-        reason_parts.append("SMART_CORRECTION")
-    if signals.get("smart_retest"):
-        reason_parts.append("SMART_RETEST")
-    if signals.get("volume_boost"):
-        reason_parts.append("VOLUME_BOOST")
-    if signals.get("candle_strength", 0) > 0.7:
-        reason_parts.append("STRONG_CANDLE")
-    
-    detailed_reason = " | ".join(reason_parts)
+    reason = f"ELITE: {candidate.get('reason', '')} | CONF:{confidence:.1f} | MODE:{trading_mode}"
     
     return enhanced_open_market(
         "buy" if side == "buy" else "sell",
         qty,
         price,
         confidence,
-        f"ELITE_INTEGRATED: {detailed_reason}",
+        reason,
         df, ind, trading_mode
     )
 
@@ -808,7 +1264,7 @@ def evaluate_all_elite(df):
     """
     info = rf_signal_closed(df)
     ind = compute_indicators(df)
-    zones = detect_zones(df)
+    zones = {"supply": None, "demand": None}  # zones مبسطة
     
     b, b_r, s, s_r, score_b, score_s, scm_line, trend, _, _ = integrated_council_voting(df, ind, info, zones)
     
@@ -826,14 +1282,6 @@ def evaluate_all_elite(df):
         candidates.append({"side": "buy", "score": 1.0, "votes": 0, "reason": "RF_LONG", "trend": trend, "src": "rf"})
     if info.get("short"):
         candidates.append({"side": "sell", "score": 1.0, "votes": 0, "reason": "RF_SHORT", "trend": trend, "src": "rf"})
-    
-    tb_ok, tb_score, tb_r = detect_true_bottom(df, ind)
-    if tb_ok:
-        candidates.append({"side": "buy", "score": tb_score, "votes": ENTRY_MIN_VOTES + 2, "reason": f"TRUE_BOTTOM", "trend": trend, "src": "ttb"})
-    
-    tt_ok, tt_score, tt_r = detect_true_top(df, ind)
-    if tt_ok:
-        candidates.append({"side": "sell", "score": tt_score, "votes": ENTRY_MIN_VOTES + 2, "reason": f"TRUE_TOP", "trend": trend, "src": "ttb"})
     
     elite_candidate = elite_decision_making(df, ind, info, zones, candidates)
     plan, plan_reasons = decide_plan(df, ind, info, zones)
