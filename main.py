@@ -1,3 +1,5 @@
+[file name]: main.py
+[file content begin]
 # file: sui_bot_council_elite_pro_enhanced.py
 # -*- coding: utf-8 -*-
 """
@@ -9,6 +11,7 @@ BYBIT — SUI Perp Council ELITE PRO PLUS (المتداول المحترف ال�
 - إدارة ذكية للربح والخسارة
 - كشف القمم والقيعان الحقيقية
 - النظام الذكي للتصحيح وإعادة الاختبار
+- نظام SCALP vs TREND مع RSI+MA والمناطق الذهبية
 """
 
 import os, time, math, random, signal, sys, traceback, logging, uuid, threading, csv
@@ -43,6 +46,28 @@ INTERVAL      = "15m"
 LEVERAGE      = 10
 RISK_ALLOC    = 0.60
 POSITION_MODE = "oneway"
+
+# ===== MODE & ENTRY CONFIG =====
+SCALP_ADX_MIN = 14       # تحتها سكالب أو انتظار
+TREND_ADX_MIN = 26       # من هنا نعتبر ترند قوي
+RSI_NEUTRAL_BAND = (45.0, 55.0)  # نطاق تشويش
+RSI_CROSS_BOOST_VOTES = 2       # cross boost votes
+RSI_CROSS_BOOST_SCORE = 1.0     # cross boost score
+RSI_TRENDZ_BOOST_VOTES = 3      # Trend-Z boost votes
+RSI_TRENDZ_BOOST_SCORE = 1.5    # Trend-Z boost score
+RSI_TRENDZ_PERSIST = 3          # consecutive bars
+
+ENTRY_MIN_VOTES = 6
+ENTRY_MIN_SCORE = 2.2
+
+GZ_CAN_LEAD_ENTRY = True   # السماح للمنطقة الذهبية بقيادة الدخول
+GZ_MIN_SCORE = 6.0
+
+# إدارة مختلفة للـ SCALP vs TREND
+SCALP_TP_PCT = 0.35  # هدف السكالب
+TREND_TP_PCT = 0.60  # هدف الترند
+SCALP_BE_AT = 0.30   # نقطة التعادل للسكالب
+TREND_BE_AT = 0.50   # نقطة التعادل للترند
 
 # نظام إدارة الصفقات المحسن
 TRADE_MANAGEMENT = {
@@ -300,10 +325,13 @@ STATE = {
         "trailing_active": False,         # هل الوقف المتحرك نشط
         "initial_stop": None,             # وقف الخسارة الأولي
         "current_stop": None,             # وقف الخسارة الحالي
+        "trading_mode": "SCALP",          # نمط التداول الحالي
     },
     "position_size": 0.0,                 # حجم المركز الإجمالي
     "remaining_size": 0.0,                # حجم المركز المتبقي بعد الجني الجزئي
     "entry_strength": 0.0,                # قوة الصفقة عند الدخول
+    "rsi_ma_signal": {},                  # إشارات RSI+MA
+    "trading_mode": "SCALP",              # نمط التداول الحالي
 }
 
 def _now(): return time.time()
@@ -403,7 +431,7 @@ def _price_band(side:str, px:float, max_bps:float):
     if side == "buy":  return px * (1 + max_bps/10000.0)
     else:              return px * (1 - max_bps/10000.0)
 
-# =================== المؤشرات المحسنة ===================
+# =================== المؤشرات المحسنة مع RSI+MA ===================
 def wilder_ema(s: pd.Series, n: int): return s.ewm(alpha=1/n, adjust=False).mean()
 def _ema(s: pd.Series, n: int): return s.ewm(span=n, adjust=False).mean()
 
@@ -503,51 +531,123 @@ def rf_signal_closed(df: pd.DataFrame):
             "short": bool(short_sig), "filter": f_prev,
             "hi": float(hi.iloc[-1]), "lo": float(lo.iloc[-1])}
 
-# =================== دوال RSI_MA المساعدة ===================
-def _rolling_mean(s: pd.Series, n: int):
-    try:
-        return s.rolling(n).mean()
-    except Exception:
-        return s
+# =================== دوال RSI_MA المساعدة المحسنة ===================
+def rsi_series(close, length=14):
+    """حساب RSI من سلسلة الأسعار"""
+    delta = close.diff()
+    up = delta.clip(lower=0)
+    down = (-delta).clip(lower=0)
+    
+    ma_up = up.ewm(alpha=1/length, adjust=False).mean()
+    ma_dn = down.ewm(alpha=1/length, adjust=False).mean()
+    
+    rs = ma_up / (ma_dn + 1e-12)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-def rsi_ma_features(df: pd.DataFrame, rsi_series: pd.Series, ma_len: int = RSI_MA_LEN):
-    """يُرجِع: rsi_ma, delta, slope, persist, signal"""
-    if rsi_series is None or rsi_series.empty or len(rsi_series) < ma_len + 3:
-        return None
-
-    rsi_ma = _rolling_mean(rsi_series, ma_len)
-    # delta & slope
-    delta = (rsi_series - rsi_ma)
-    slope = rsi_ma.diff()
-
-    # persistence (عدد الشموع المتتالية فوق/تحت MA)
-    persist = 0
-    for i in range(1, min(len(delta), 100)+1):
-        j = -i
-        if delta.iloc[j] > 0:
-            if persist >= 0: persist += 1
-            else: break
-        elif delta.iloc[j] < 0:
-            if persist <= 0: persist -= 1
-            else: break
-        else:
-            break
-
-    # إشارة تقاطع للشمعة الأخيرة
-    sig = "neutral"
-    if len(rsi_series) >= 2 and len(rsi_ma) >= 2:
-        if rsi_series.iloc[-2] < rsi_ma.iloc[-2] and rsi_series.iloc[-1] > rsi_ma.iloc[-1]:
-            sig = "bullish_cross"
-        elif rsi_series.iloc[-2] > rsi_ma.iloc[-2] and rsi_series.iloc[-1] < rsi_ma.iloc[-1]:
-            sig = "bearish_cross"
-
-    return {
+def enhanced_rsi_ma_features(df, rsi_len=RSI_LEN, ma_len=RSI_MA_LEN):
+    """ميزات RSI+MA المحسنة"""
+    if len(df) < max(rsi_len, ma_len) + 10:
+        return {"rsi": 50.0, "rsi_ma": 50.0, "cross": "none", "trendZ_ok": False, "trendZ_dir": None}
+    
+    close = df['close'].astype(float)
+    rsi = rsi_series(close, rsi_len)
+    rsi_ma = rsi.rolling(ma_len).mean()
+    
+    # التقاطع
+    cross = "none"
+    if len(rsi) >= 2 and len(rsi_ma) >= 2:
+        if rsi.iloc[-2] <= rsi_ma.iloc[-2] and rsi.iloc[-1] > rsi_ma.iloc[-1]:
+            cross = "bull"
+        elif rsi.iloc[-2] >= rsi_ma.iloc[-2] and rsi.iloc[-1] < rsi_ma.iloc[-1]:
+            cross = "bear"
+    
+    # Trend-Z: استمرارية فوق/تحت MA مع ميل
+    above = (rsi > rsi_ma)
+    persist_up = int(above.tail(RSI_TRENDZ_PERSIST).sum() == RSI_TRENDZ_PERSIST)
+    persist_dn = int((~above.tail(RSI_TRENDZ_PERSIST)).sum() == RSI_TRENDZ_PERSIST)
+    
+    # حساب الميل
+    slope = 0.0
+    if len(rsi_ma) >= RSI_TRENDZ_PERSIST:
+        slope = float(rsi_ma.iloc[-1] - rsi_ma.iloc[-RSI_TRENDZ_PERSIST])
+    
+    trendZ_ok = False
+    trendZ_dir = None
+    if persist_up and slope > 0.1:  # حد أدنى للميل
+        trendZ_ok, trendZ_dir = True, "up"
+    elif persist_dn and slope < -0.1:
+        trendZ_ok, trendZ_dir = True, "down"
+    
+    result = {
+        "rsi": float(rsi.iloc[-1]),
         "rsi_ma": float(rsi_ma.iloc[-1]),
-        "delta":  float(delta.iloc[-1]),
-        "slope":  float(slope.iloc[-1]),
-        "persist": int(persist),
-        "signal": sig
+        "cross": cross,
+        "trendZ_ok": trendZ_ok,
+        "trendZ_dir": trendZ_dir,
+        "persist_up": persist_up,
+        "persist_dn": persist_dn,
+        "slope": slope
     }
+    
+    # تحديث STATE
+    STATE["rsi_ma_signal"] = result
+    return result
+
+def classify_trading_mode(adx_value: float, rsi_sig: dict) -> tuple:
+    """تصنيف نمط التداول: SCALP vs TREND"""
+    reasons = []
+    
+    if adx_value >= TREND_ADX_MIN:
+        reasons.append(f"adx≥{TREND_ADX_MIN}")
+        if rsi_sig["trendZ_ok"]:
+            reasons.append(f"rsi_trendZ:{rsi_sig['trendZ_dir']}")
+        return "TREND", reasons
+    
+    # ترند ضعيف ⇒ سكالب
+    if adx_value >= SCALP_ADX_MIN:
+        reasons.append(f"{SCALP_ADX_MIN}≤adx<{TREND_ADX_MIN}")
+        return "SCALP", reasons
+    
+    reasons.append(f"adx<{SCALP_ADX_MIN}")
+    return "SCALP", reasons
+
+def enhanced_entry_guard(side_hint: str, council_votes: dict, gz_signal: dict, adx_value: float, rsi_sig: dict) -> tuple:
+    """بوابة دخول محسنة مع المناطق الذهبية"""
+    buy_votes = council_votes.get("buy_votes", 0)
+    sell_votes = council_votes.get("sell_votes", 0)
+    council_score = council_votes.get("score", 0)
+    
+    # Golden Zone override
+    if GZ_CAN_LEAD_ENTRY and gz_signal and gz_signal.get("ok") and gz_signal.get("score", 0) >= GZ_MIN_SCORE:
+        gz_type = gz_signal.get("zone", {}).get("type", "")
+        if (side_hint == "buy" and gz_type == "golden_bottom") or (side_hint == "sell" and gz_type == "golden_top"):
+            return True, f"GOLDEN_ZONE[{gz_type}] score={gz_signal['score']:.1f}"
+    
+    # Council thresholds مع تعزيز RSI
+    if side_hint == "buy":
+        if buy_votes >= ENTRY_MIN_VOTES and council_score >= ENTRY_MIN_SCORE:
+            # تعزيز إضافي لـ RSI
+            boost_msg = ""
+            if rsi_sig["cross"] == "bull":
+                boost_msg += " RSI_BULL_CROSS"
+            if rsi_sig["trendZ_ok"] and rsi_sig["trendZ_dir"] == "up":
+                boost_msg += " RSI_TRENDZ_UP"
+                
+            return True, f"Council BUY (votes={buy_votes} score={council_score:.1f}{boost_msg})"
+    
+    elif side_hint == "sell":
+        if sell_votes >= ENTRY_MIN_VOTES and council_score >= ENTRY_MIN_SCORE:
+            # تعزيز إضافي لـ RSI
+            boost_msg = ""
+            if rsi_sig["cross"] == "bear":
+                boost_msg += " RSI_BEAR_CROSS"
+            if rsi_sig["trendZ_ok"] and rsi_sig["trendZ_dir"] == "down":
+                boost_msg += " RSI_TRENDZ_DOWN"
+                
+            return True, f"Council SELL (votes={sell_votes} score={council_score:.1f}{boost_msg})"
+    
+    return False, f"Council blocked (B={buy_votes} S={sell_votes} score={council_score:.1f})"
 
 # =================== دوال المناطق الذهبية ===================
 def _swing_points_for_fib(df: pd.DataFrame, lookback=40):
@@ -616,16 +716,11 @@ def golden_zone_check(df: pd.DataFrame, ind: dict, side: str):
             score += 1.0; reasons.append("sweep_up")
 
         # RSI/MA confluence
-        # نعيد حساب RSI سلسلة من df (نفس منطقتك)
-        c = df['close'].astype(float)
-        delta = c.diff(); up = delta.clip(lower=0.0); dn = (-delta).clip(lower=0.0)
-        rs = wilder_ema(up, RSI_LEN) / wilder_ema(dn, RSI_LEN).replace(0,1e-12)
-        rsi_series = 100 - (100 / (1 + rs))
-        rsi_feat = rsi_ma_features(df, rsi_series)
-        if rsi_feat:
-            if side == "buy" and (rsi_feat["signal"] == "bullish_cross" or (rsi_feat["persist"] >= RSI_TRENDZ_PERSIST and rsi_feat["delta"] > 0 and rsi_feat["slope"] > 0)):
+        rsi_sig = enhanced_rsi_ma_features(df)
+        if rsi_sig:
+            if side == "buy" and (rsi_sig["cross"] == "bull" or (rsi_sig["persist_up"] >= RSI_TRENDZ_PERSIST and rsi_sig["slope"] > 0)):
                 score += 1.5; reasons.append("rsi_ma_bullish")
-            if side == "sell" and (rsi_feat["signal"] == "bearish_cross" or (rsi_feat["persist"] <= -RSI_TRENDZ_PERSIST and rsi_feat["delta"] < 0 and rsi_feat["slope"] < 0)):
+            if side == "sell" and (rsi_sig["cross"] == "bear" or (rsi_sig["persist_dn"] >= RSI_TRENDZ_PERSIST and rsi_sig["slope"] < 0)):
                 score += 1.5; reasons.append("rsi_ma_bearish")
 
         # ADX شرط أساسي
@@ -641,12 +736,12 @@ def golden_zone_check(df: pd.DataFrame, ind: dict, side: str):
         print(colored(f"⚠️ golden_zone_check error: {e}", "yellow"))
         return {"ok": False, "score": 0.0, "reasons": ["error"], "zone": None}
 
-# =================== نظام إدارة الصفقات المحسن ===================
-def calculate_position_size(balance, price, strength):
-    """حساب حجم المركز بناء على قوة الإشارة ورأس المال"""
+# =================== نظام إدارة الصفقات المحسن مع SCALP/TREND ===================
+def calculate_position_size(balance, price, strength, trading_mode="SCALP"):
+    """حساب حجم المركز بناء على قوة الإشارة ورأس المال ونمط التداول"""
     base_size = compute_size(balance, price)
     
-    # تعديل الحجم بناء على قوة الإشارة
+    # تعديل الحجم بناء على قوة الإشارة ونمط التداول
     if strength >= 6.0:
         strength_factor = 1.2  # زيادة الحجم للإشارات القوية
     elif strength >= 4.5:
@@ -654,7 +749,13 @@ def calculate_position_size(balance, price, strength):
     else:
         strength_factor = 0.7  # تقليل الحجم للإشارات الضعيفة
     
-    adjusted_size = base_size * strength_factor
+    # تعديل إضافي بناء على نمط التداول
+    if trading_mode == "TREND":
+        mode_factor = 1.1  # زيادة بسيطة للترند
+    else:
+        mode_factor = 0.9  # تقليل بسيط للسكالب
+    
+    adjusted_size = base_size * strength_factor * mode_factor
     
     return safe_qty(adjusted_size)
 
@@ -673,10 +774,30 @@ def compute_size(balance, price):
         return 0.0
     return q_norm
 
-def setup_trade_management(entry_price, atr, side, strength):
-    """إعداد نظام إدارة الصفقة"""
-    # وقف الخسارة الأولي (1.5x ATR) - أكثر تشدداً
-    stop_distance = atr * 1.5
+def setup_trade_management(entry_price, atr, side, strength, trading_mode="SCALP"):
+    """إعداد نظام إدارة الصفقة مع نمط التداول"""
+    
+    # تحديد المعلمات بناء على نمط التداول
+    if trading_mode == "TREND":
+        tp_targets = [
+            {"target": 0.8, "percentage": 0.30},
+            {"target": 1.8, "percentage": 0.40}, 
+            {"target": 3.0, "percentage": 0.30}
+        ]
+        break_even_at = TREND_BE_AT
+        trail_start_at = 1.2
+        stop_multiplier = 1.8  # وقف أوسع للترند
+    else:  # SCALP
+        tp_targets = [
+            {"target": 0.4, "percentage": 0.50},
+            {"target": 0.8, "percentage": 0.50}
+        ]
+        break_even_at = SCALP_BE_AT  
+        trail_start_at = 0.6
+        stop_multiplier = 1.2  # وقف أقرب للسكالب
+    
+    # وقف الخسارة الأولي
+    stop_distance = atr * stop_multiplier
     if side == "long":
         initial_stop = entry_price - stop_distance
     else:
@@ -685,24 +806,34 @@ def setup_trade_management(entry_price, atr, side, strength):
     STATE["trade_management"].update({
         "partial_taken": False,
         "targets_hit": [],
-        "break_even_moved": False,
+        "break_even_moved": False, 
         "trailing_active": False,
         "initial_stop": initial_stop,
         "current_stop": initial_stop,
+        "take_profit_targets": tp_targets,
+        "break_even_at": break_even_at,
+        "trail_start_at": trail_start_at,
+        "trading_mode": trading_mode
     })
     
-    # تحديد استراتيجية جني الأرباح بناء على قوة الصفقة
-    if strength >= 6.0:
-        STATE["trade_management"]["take_profit_strategy"] = "multi_target"  # جني متعدد
-    else:
-        STATE["trade_management"]["take_profit_strategy"] = "single_target"  # جني واحد
+    STATE["trading_mode"] = trading_mode
     
-    print(colored(f"🎯 إدارة الصفقة: وقف أولي {fmt(initial_stop)} | ATR {fmt(atr)} | استراتيجية: {STATE['trade_management']['take_profit_strategy']}", "cyan"))
+    print(colored(
+        f"🎯 إدارة {trading_mode}: وقف {fmt(initial_stop)} | ATR {fmt(atr)} | "
+        f"BE@{break_even_at}% | Trail@{trail_start_at}% | StopMult={stop_multiplier}", 
+        "cyan"
+    ))
 
 def check_take_profit_targets(current_price, entry_price, side, atr):
-    """التحقق من مستويات جني الأرباح بناء على قوة الصفقة"""
+    """التحقق من مستويات جني الأرباح بناء على قوة الصفقة ونمط التداول"""
     if not TRADE_MANAGEMENT["partial_take_profit"]:
         return False
+    
+    tm = STATE["trade_management"]
+    trading_mode = tm.get("trading_mode", "SCALP")
+    
+    # استخدام أهداف نمط التداول المحدد
+    tp_targets = tm.get("take_profit_targets", TAKE_PROFIT_LEVELS)
     
     # حساب الربح الحالي
     if side == "long":
@@ -710,32 +841,19 @@ def check_take_profit_targets(current_price, entry_price, side, atr):
     else:
         profit_pct = (entry_price - current_price) / entry_price * 100
     
-    tm = STATE["trade_management"]
     remaining_qty = STATE["remaining_size"] or STATE["qty"]
     
-    # تحديد استراتيجية الجني
-    if tm.get("take_profit_strategy") == "multi_target":
-        # جني متعدد للمراكز القوية
-        for level in TAKE_PROFIT_LEVELS:
-            target = level["target"]
-            percentage = level["percentage"]
-            
-            if target not in tm["targets_hit"] and profit_pct >= target:
-                # جني نسبة من المركز
-                close_qty = safe_qty(remaining_qty * percentage)
-                if close_qty > 0:
-                    close_partial_position(close_qty, f"TAKE_PROFIT_{target}%")
-                    tm["targets_hit"].append(target)
-                    print(colored(f"🎯 جني ربح {target}%: إغلاق {percentage*100}% من المركز", "green"))
-                    return True
-    else:
-        # جني واحد للمراكز الضعيفة عند 1.5%
-        if profit_pct >= 1.5 and not tm["partial_taken"]:
-            close_qty = safe_qty(remaining_qty * 0.5)  # جني 50%
+    for level in tp_targets:
+        target = level["target"]
+        percentage = level["percentage"]
+        
+        if target not in tm["targets_hit"] and profit_pct >= target:
+            # جني نسبة من المركز
+            close_qty = safe_qty(remaining_qty * percentage)
             if close_qty > 0:
-                close_partial_position(close_qty, "SINGLE_TAKE_PROFIT_1.5%")
-                tm["partial_taken"] = True
-                print(colored("🎯 جني ربح 1.5%: إغلاق 50% من المركز", "green"))
+                close_partial_position(close_qty, f"TAKE_PROFIT_{target}%_{trading_mode}")
+                tm["targets_hit"].append(target)
+                print(colored(f"🎯 جني ربح {target}% ({trading_mode}): إغلاق {percentage*100}% من المركز", "green"))
                 return True
     
     return False
@@ -749,6 +867,8 @@ def check_break_even(current_price, entry_price, side, atr):
     if tm["break_even_moved"]:
         return False
     
+    break_even_at = tm.get("break_even_at", BREAK_EVEN_AT)
+    
     # حساب الربح الحالي
     if side == "long":
         profit_pct = (current_price - entry_price) / entry_price * 100
@@ -757,38 +877,42 @@ def check_break_even(current_price, entry_price, side, atr):
         profit_pct = (entry_price - current_price) / entry_price * 100
         new_stop = entry_price
     
-    if profit_pct >= BREAK_EVEN_AT:
+    if profit_pct >= break_even_at:
         tm["current_stop"] = new_stop
         tm["break_even_moved"] = True
-        print(colored(f"🛡️ الانتقال لنقطة التعادل: وقف الخسارة {fmt(new_stop)}", "yellow"))
+        print(colored(f"🛡️ الانتقال لنقطة التعادل ({STATE['trading_mode']}): وقف الخسارة {fmt(new_stop)}", "yellow"))
         return True
     
     return False
 
 def update_trailing_stop(current_price, entry_price, side, atr):
-    """تحديث الوقف المتحرك"""
+    """تحديث الوقف المتحرك بناء على نمط التداول"""
     if not TRADE_MANAGEMENT["dynamic_trailing"]:
         return
     
     tm = STATE["trade_management"]
+    trail_start_at = tm.get("trail_start_at", TRAIL_START_AT)
     
     # حساب الربح الحالي
     if side == "long":
         profit_pct = (current_price - entry_price) / entry_price * 100
-        if profit_pct >= TRAIL_START_AT:
-            new_stop = current_price - (atr * ATR_TRAIL_MULT)
+        if profit_pct >= trail_start_at:
+            # استخدام مضاعف مختلف بناء على نمط التداول
+            trail_multiplier = ATR_TRAIL_MULT * (1.2 if STATE["trading_mode"] == "TREND" else 0.8)
+            new_stop = current_price - (atr * trail_multiplier)
             if new_stop > tm["current_stop"]:
                 tm["current_stop"] = new_stop
                 tm["trailing_active"] = True
-                print(colored(f"📈 تحديث الوقف المتحرك: {fmt(new_stop)}", "blue"))
+                print(colored(f"📈 تحديث الوقف المتحرك ({STATE['trading_mode']}): {fmt(new_stop)}", "blue"))
     else:
         profit_pct = (entry_price - current_price) / entry_price * 100
-        if profit_pct >= TRAIL_START_AT:
-            new_stop = current_price + (atr * ATR_TRAIL_MULT)
+        if profit_pct >= trail_start_at:
+            trail_multiplier = ATR_TRAIL_MULT * (1.2 if STATE["trading_mode"] == "TREND" else 0.8)
+            new_stop = current_price + (atr * trail_multiplier)
             if new_stop < tm["current_stop"]:
                 tm["current_stop"] = new_stop
                 tm["trailing_active"] = True
-                print(colored(f"📈 تحديث الوقف المتحرك: {fmt(new_stop)}", "blue"))
+                print(colored(f"📈 تحديث الوقف المتحرك ({STATE['trading_mode']}): {fmt(new_stop)}", "blue"))
 
 def check_stop_loss(current_price, side):
     """التحقق من وقف الخسارة"""
@@ -796,10 +920,10 @@ def check_stop_loss(current_price, side):
     stop_price = tm["current_stop"]
     
     if side == "long" and current_price <= stop_price:
-        close_market_strict(f"STOP_LOSS {fmt(stop_price)}")
+        close_market_strict(f"STOP_LOSS {fmt(stop_price)} {STATE['trading_mode']}")
         return True
     elif side == "short" and current_price >= stop_price:
-        close_market_strict(f"STOP_LOSS {fmt(stop_price)}")
+        close_market_strict(f"STOP_LOSS {fmt(stop_price)} {STATE['trading_mode']}")
         return True
     
     return False
@@ -841,7 +965,7 @@ def close_partial_position(qty, reason):
                 print(colored(f"[PAPER] partial close {side_to_close} {qty_to_close}", "cyan"))
             
             time.sleep(0.5)
-            print(colored(f"✅ إغلاق جزئي: {fmt(qty_to_close,4)} | السبب: {reason}", "green"))
+            print(colored(f"✅ إغلاق جزئي ({STATE['trading_mode']}): {fmt(qty_to_close,4)} | السبب: {reason}", "green"))
             return True
             
         except Exception as e:
@@ -853,16 +977,12 @@ def close_partial_position(qty, reason):
 # =================== إدارة الصفقة الذكية مع RSI-MA ===================
 def rsi_ma_trade_management_hint(df: pd.DataFrame, side: str):
     try:
-        c = df['close'].astype(float)
-        delta = c.diff(); up = delta.clip(lower=0.0); dn = (-delta).clip(lower=0.0)
-        rs = wilder_ema(up, RSI_LEN) / wilder_ema(dn, RSI_LEN).replace(0,1e-12)
-        rsi_series = 100 - (100 / (1 + rs))
-        r = rsi_ma_features(df, rsi_series, RSI_MA_LEN)
-        if not r: 
+        rsi_sig = enhanced_rsi_ma_features(df)
+        if not rsi_sig: 
             return
 
         # إشارات ضد اتجاه المركز → تشديد حماية
-        if side == "long" and (r["signal"]=="bearish_cross" or (r["persist"]<=-RSI_TRENDZ_PERSIST and r["delta"]<0 and r["slope"]<0)):
+        if side == "long" and (rsi_sig["cross"]=="bear" or (rsi_sig["trendZ_ok"] and rsi_sig["trendZ_dir"]=="down")):
             # تشديد الوقف المتحرك + BE + جزئي خفيف إن متحقق ربح
             update_trailing_stop(price_now(), STATE["entry"], side, float(STATE.get("atr", 0.0)))
             check_break_even(price_now(), STATE["entry"], side, float(STATE.get("atr", 0.0)))
@@ -872,7 +992,7 @@ def rsi_ma_trade_management_hint(df: pd.DataFrame, side: str):
                 close_partial_position(safe_qty(STATE["qty"] * 0.25), "RSI-MA warning vs LONG")
             print(colored("🛡️ RSI-MA ضد LONG → tighten/BE/partial", "yellow"))
 
-        if side == "short" and (r["signal"]=="bullish_cross" or (r["persist"]>=RSI_TRENDZ_PERSIST and r["delta"]>0 and r["slope"]>0)):
+        if side == "short" and (rsi_sig["cross"]=="bull" or (rsi_sig["trendZ_ok"] and rsi_sig["trendZ_dir"]=="up")):
             update_trailing_stop(price_now(), STATE["entry"], side, float(STATE.get("atr", 0.0)))
             check_break_even(price_now(), STATE["entry"], side, float(STATE.get("atr", 0.0)))
             tm = STATE["trade_management"]
@@ -881,16 +1001,16 @@ def rsi_ma_trade_management_hint(df: pd.DataFrame, side: str):
             print(colored("🛡️ RSI-MA ضد SHORT → tighten/BE/partial", "yellow"))
 
         # مع اتجاه المركز بقوة (Trend-Z) → نمد الصبر (Hold-TP)
-        if side == "long" and (r["persist"]>=RSI_TRENDZ_PERSIST and r["delta"]>0 and r["slope"]>0):
+        if side == "long" and (rsi_sig["trendZ_ok"] and rsi_sig["trendZ_dir"]=="up"):
             # لا نغير أهدافك… فقط نسمح للتريل يتنفس (تأخير جني مبكر)
             print(colored("⏳ RSI-MA مع LONG → Hold-TP (صبر ذكي)", "blue"))
-        if side == "short" and (r["persist"]<=-RSI_TRENDZ_PERSIST and r["delta"]<0 and r["slope"]<0):
+        if side == "short" and (rsi_sig["trendZ_ok"] and rsi_sig["trendZ_dir"]=="down"):
             print(colored("⏳ RSI-MA مع SHORT → Hold-TP (صبر ذكي)", "blue"))
 
     except Exception as e:
         print(colored(f"⚠️ rsi_ma_trade_management_hint error: {e}", "yellow"))
 
-# =================== مجلس الإدارة الذكي المحسن ===================
+# =================== مجلس الإدارة الذكي المحسن مع RSI+MA ===================
 def _find_swings(df: pd.DataFrame, left:int=2, right:int=2):
     if len(df) < left+right+3: return None, None
     h = df["high"].astype(float).values
@@ -1223,7 +1343,8 @@ def trap_detect_row(o: float, c: float, zones: dict, side: str) -> bool:
         return True
     return False
 
-def council_scm_votes(df, ind, info, zones):
+def council_scm_votes_original(df, ind, info, zones):
+    """الإصدار الأصلي من council_scm_votes بدون تعزيزات RSI+MA"""
     d = df.iloc[:-1] if len(df) >= 2 else df
     if len(d) < 1:
         return 0,[],0,[],0,0,"SCM | warmup", "sideways", False, False
@@ -1406,48 +1527,6 @@ def council_scm_votes(df, ind, info, zones):
     elif delta_pressure < -1.0:
         s+=1; score_s+=0.5; reasons_s.append(f"Delta {delta_pressure:.1f}")
 
-    # ===== RSI+MA Confirmation (boost only, no veto) =====
-    try:
-        # إعادة اشتقاق سلسلة RSI من df (من غير ما نغيّر compute_indicators)
-        c = df['close'].astype(float)
-        delta = c.diff(); up = delta.clip(lower=0.0); dn = (-delta).clip(lower=0.0)
-        rs = wilder_ema(up, RSI_LEN) / wilder_ema(dn, RSI_LEN).replace(0,1e-12)
-        rsi_series = 100 - (100 / (1 + rs))
-
-        r = rsi_ma_features(df, rsi_series, RSI_MA_LEN)
-        if r:
-            rsi_now = float(ind.get("rsi") or rsi_series.iloc[-1])  # نُبقي قراءة rsi الأصلية لو حابب
-            chop = (RSI_CHOP_BAND[0] <= rsi_now <= RSI_CHOP_BAND[1]) or (abs(r["delta"]) < 0.8)
-
-            # تقاطع
-            if r["signal"] == "bullish_cross" and rsi_now < 70:
-                b += RSI_CROSS_VOTES; score_b += RSI_CROSS_SCORE
-                print(colored(f"🔎 RSI-MA: bull_cross | rsi={rsi_now:.1f} ma={r['rsi_ma']:.1f} → boost BUY +{RSI_CROSS_VOTES} (+{RSI_CROSS_SCORE})", "cyan"))
-            elif r["signal"] == "bearish_cross" and rsi_now > 30:
-                s += RSI_CROSS_VOTES; score_s += RSI_CROSS_SCORE
-                print(colored(f"🔎 RSI-MA: bear_cross | rsi={rsi_now:.1f} ma={r['rsi_ma']:.1f} → boost SELL +{RSI_CROSS_VOTES} (+{RSI_CROSS_SCORE})", "cyan"))
-
-            # Trend-Z
-            if r["persist"] >= RSI_TRENDZ_PERSIST and r["delta"] > 0 and r["slope"] > 0:
-                b += RSI_TRENDZ_VOTES; score_b += RSI_TRENDZ_SCORE
-                print(colored(f"📈 RSI-MA: bull_trendZ persist={r['persist']} → boost BUY +{RSI_TRENDZ_VOTES} (+{RSI_TRENDZ_SCORE})", "cyan"))
-            elif r["persist"] <= -RSI_TRENDZ_PERSIST and r["delta"] < 0 and r["slope"] < 0:
-                s += RSI_TRENDZ_VOTES; score_s += RSI_TRENDZ_SCORE
-                print(colored(f"📉 RSI-MA: bear_trendZ persist={abs(r['persist'])} → boost SELL +{RSI_TRENDZ_VOTES} (+{RSI_TRENDZ_SCORE})", "cyan"))
-
-            # Trend alignment bonus
-            if trend == "strong_up" and (r["signal"]=="bullish_cross" or r["persist"]>=RSI_TRENDZ_PERSIST):
-                score_b += RSI_TREND_BONUS_STRONG
-            if trend == "strong_down" and (r["signal"]=="bearish_cross" or r["persist"]<=-RSI_TRENDZ_PERSIST):
-                score_s += RSI_TREND_BONUS_STRONG
-
-            # نطاق حياد
-            if chop:
-                score_b *= 0.8; score_s *= 0.8
-                print(colored("🟨 RSI-MA: chop band 45–55 or weak delta → damp scores x0.8", "yellow"))
-    except Exception as e:
-        print(colored(f"⚠️ RSI-MA features error: {e}", "yellow"))
-
     # ===== Golden Zones (council-led entries) =====
     golden_long = golden_zone_check(df, ind, "buy")
     golden_short = golden_zone_check(df, ind, "sell")
@@ -1520,6 +1599,58 @@ def council_scm_votes(df, ind, info, zones):
     
     scm_line = f"SCM | {trend} | votes(b={b},s={s}) | vol_boost={volume_boost} | elite_pro_mode"
     return (b,reasons_b,s,reasons_s,score_b,score_s,scm_line,trend, False, False)
+
+def council_scm_votes(df, ind, info, zones):
+    """مجلس الإدارة مع تعزيز RSI+MA"""
+    # الاستدعاء الأصلي
+    b, b_r, s, s_r, score_b, score_s, scm_line, trend, _, _ = council_scm_votes_original(df, ind, info, zones)
+    
+    # حساب ميزات RSI+MA
+    rsi_sig = enhanced_rsi_ma_features(df)
+    
+    # RSI cross boost
+    if rsi_sig["cross"] == "bull" and rsi_sig["rsi"] < 70:
+        b += RSI_CROSS_BOOST_VOTES
+        score_b += RSI_CROSS_BOOST_SCORE
+        b_r.append("rsi_cross_bull")
+        print(colored(f"🔎 RSI-MA: bull_cross → boost BUY +{RSI_CROSS_BOOST_VOTES}", "cyan"))
+        
+    elif rsi_sig["cross"] == "bear" and rsi_sig["rsi"] > 30:
+        s += RSI_CROSS_BOOST_VOTES  
+        score_s += RSI_CROSS_BOOST_SCORE
+        s_r.append("rsi_cross_bear")
+        print(colored(f"🔎 RSI-MA: bear_cross → boost SELL +{RSI_CROSS_BOOST_VOTES}", "cyan"))
+
+    # Trend-Z boost
+    if rsi_sig["trendZ_ok"]:
+        if rsi_sig["trendZ_dir"] == "up":
+            b += RSI_TRENDZ_BOOST_VOTES
+            score_b += RSI_TRENDZ_BOOST_SCORE
+            b_r.append("rsi_trendZ_up")
+            print(colored(f"📈 RSI-MA: bull_trendZ → boost BUY +{RSI_TRENDZ_BOOST_VOTES}", "cyan"))
+        else:
+            s += RSI_TRENDZ_BOOST_VOTES
+            score_s += RSI_TRENDZ_BOOST_SCORE  
+            s_r.append("rsi_trendZ_down")
+            print(colored(f"📉 RSI-MA: bear_trendZ → boost SELL +{RSI_TRENDZ_BOOST_VOTES}", "cyan"))
+
+    # تخفيف في النطاق المحايد
+    lo, hi = RSI_NEUTRAL_BAND
+    if lo <= rsi_sig["rsi"] <= hi:
+        score_b *= 0.8
+        score_s *= 0.8
+        b_r.append("rsi_chop_damp")
+        s_r.append("rsi_chop_damp")
+        print(colored("🟨 RSI-MA: chop band 45–55 → damp scores x0.8", "yellow"))
+    
+    # تحديث سطر SCM
+    scm_line += f" | RSI={rsi_sig['rsi']:.1f}/{rsi_sig['rsi_ma']:.1f}"
+    if rsi_sig["cross"] != "none":
+        scm_line += f" cross_{rsi_sig['cross']}"
+    if rsi_sig["trendZ_ok"]:
+        scm_line += f" trendZ_{rsi_sig['trendZ_dir']}"
+    
+    return b, b_r, s, s_r, score_b, score_s, scm_line, trend, False, False
 
 def council_entry(df, ind, info, zones):
     b,b_r,s,s_r,score_b,score_s,scm_line,trend,_,_ = council_scm_votes(df, ind, info, zones)
@@ -2067,8 +2198,8 @@ def _read_position():
         logging.error(f"_read_position error: {e}", exc_info=True)
     return 0.0, None, None
 
-def enhanced_open_market(side, qty, price, strength, reason, df, ind):
-    """فتح صفقة محسن مع إدارة متكاملة"""
+def enhanced_open_market(side, qty, price, strength, reason, df, ind, trading_mode="SCALP"):
+    """فتح صفقة محسن مع إدارة متكاملة ونمط التداول"""
     global ENTRY_IN_PROGRESS, _last_entry_attempt_ts, PENDING_OPEN, LAST_SIGNAL_USED
     
     if _now() - _last_entry_attempt_ts < ENTRY_GUARD_WINDOW_SEC:
@@ -2093,8 +2224,8 @@ def enhanced_open_market(side, qty, price, strength, reason, df, ind):
             bal = balance_usdt()
             px = float(price or price_now() or 0.0)
             
-            # حساب حجم المركز بناء على قوة الإشارة
-            q_total = calculate_position_size(bal, px, strength)
+            # حساب حجم المركز بناء على قوة الإشارة ونمط التداول
+            q_total = calculate_position_size(bal, px, strength, trading_mode)
             
             if q_total <= 0 or (LOT_MIN and q_total < LOT_MIN):
                 print(colored(f"❌ skip open (qty too small) — bal={fmt(bal,2)} px={fmt(px)} q={q_total}", "red"))
@@ -2124,9 +2255,9 @@ def enhanced_open_market(side, qty, price, strength, reason, df, ind):
                 close_market_strict("SIDE_MISMATCH_AFTER_OPEN")
                 return False
             
-            # إعداد نظام إدارة الصفقة
+            # إعداد نظام إدارة الصفقة مع نمط التداول
             atr = float(ind.get("atr", 0))
-            setup_trade_management(float(cur_entry), atr, cur_side, strength)
+            setup_trade_management(float(cur_entry), atr, cur_side, strength, trading_mode)
             
             STATE.update({
                 "open": True, "side": cur_side, "entry": float(cur_entry),
@@ -2136,7 +2267,8 @@ def enhanced_open_market(side, qty, price, strength, reason, df, ind):
                 "entry_strength": float(strength),
                 "peak_adx": 0.0, "rsi_peak": 50.0, "rsi_trough": 50.0,
                 "peak_price": float(cur_entry), "trough_price": float(cur_entry),
-                "opp_rf_count": 0, "chop_flag": False
+                "opp_rf_count": 0, "chop_flag": False,
+                "trading_mode": trading_mode
             })
             
             TRADE_TIMES.append(time.time())
@@ -2147,13 +2279,14 @@ def enhanced_open_market(side, qty, price, strength, reason, df, ind):
                 "side": side,
                 "bar_ts": _last_closed_bar_ts(fetch_ohlcv()),
                 "src": reason.split(" ")[0] if reason else "unknown",
-                "strength": float(strength)
+                "strength": float(strength),
+                "trading_mode": trading_mode
             })
             
             print(colored(
                 f"🚀 OPEN {('🟩 LONG' if cur_side=='long' else '🟥 SHORT')} | "
                 f"qty={fmt(STATE['qty'],4)} @ {fmt(STATE['entry'])} | "
-                f"strength={fmt(strength,2)} | reason={reason}",
+                f"strength={fmt(strength,2)} | mode={trading_mode} | reason={reason}",
                 "green" if cur_side=='long' else 'red'
             ))
             
@@ -2165,7 +2298,7 @@ def enhanced_open_market(side, qty, price, strength, reason, df, ind):
             if candle_patterns["strong_bullish"] or candle_patterns["strong_bearish"]:
                 print(colored("💪 شمعة قوية - جني أرباح متوقع", "green"))
             
-            logging.info(f"OPEN {cur_side} qty={STATE['qty']} entry={STATE['entry']} strength={strength} reason={reason}")
+            logging.info(f"OPEN {cur_side} qty={STATE['qty']} entry={STATE['entry']} strength={strength} mode={trading_mode} reason={reason}")
             return True
             
         except Exception as e:
@@ -2237,7 +2370,8 @@ def close_market_strict(reason="STRICT"):
                 qty  = exch_qty
                 pnl  = (px - entry_px) * qty * (1 if side=="long" else -1)
                 compound_pnl += pnl
-                print(colored(f"🔚 STRICT CLOSE {side} reason={reason} pnl={fmt(pnl)} total={fmt(compound_pnl)}","magenta"))
+                trading_mode = STATE.get("trading_mode", "SCALP")
+                print(colored(f"🔚 STRICT CLOSE {side} ({trading_mode}) reason={reason} pnl={fmt(pnl)} total={fmt(compound_pnl)}","magenta"))
                 logging.info(f"STRICT_CLOSE {side} pnl={pnl} total={compound_pnl}")
                 _reset_after_close(reason, prev_side=side); LAST_CLOSE_TS = time.time(); return
             for _ in range(3):
@@ -2259,7 +2393,8 @@ def close_market_strict(reason="STRICT"):
                     qty  = exch_qty
                     pnl  = (px - entry_px) * qty * (1 if side=="long" else -1)
                     compound_pnl += pnl
-                    print(colored(f"🔚 STRICT CLOSE {side} reason={reason} pnl={fmt(pnl)} total={fmt(compound_pnl)}","magenta"))
+                    trading_mode = STATE.get("trading_mode", "SCALP")
+                    print(colored(f"🔚 STRICT CLOSE {side} ({trading_mode}) reason={reason} pnl={fmt(pnl)} total={fmt(compound_pnl)}","magenta"))
                     logging.info(f"STRICT_CLOSE {side} pnl={pnl} total={compound_pnl}")
                     _reset_after_close(reason, prev_side=side); LAST_CLOSE_TS = time.time(); return
             print(colored("❌ STRICT CLOSE FAILED — residual position still exists", "red"))
@@ -2286,9 +2421,12 @@ def _reset_after_close(reason, prev_side=None):
             "trailing_active": False,
             "initial_stop": None,
             "current_stop": None,
+            "trading_mode": "SCALP",
         },
         "position_size": 0.0,
         "remaining_size": 0.0,
+        "trading_mode": "SCALP",
+        "rsi_ma_signal": {},
     })
     LAST_CLOSE_BAR_TS = LAST_DECISION_BAR_TS
     if reason.startswith("CHOP"):
@@ -2395,7 +2533,7 @@ def council_exhaustion_votes(df, ind, info, zones, trend):
     return votes, reasons
 
 def enhanced_manage_position(df, ind, info, zones, trend):
-    """إدارة محسنة للصفقة مع نظام جني الأرباح المتعدد"""
+    """إدارة محسنة للصفقة مع نظام جني الأرباح المتعدد ونمط التداول"""
     if not STATE["open"] or STATE["qty"] <= 0:
         return
     
@@ -2661,162 +2799,10 @@ def _has_reversal_cues(df, zones):
     any_rev = sw["sweep_up"] or sw["sweep_down"] or tr_buy or tr_sell or pin_up or pin_down or bos_long or bos_short
     return any_rev, {}
 
-def enhanced_trade_loop():
-    """الدورة الرئيسية المحسنة للتداول"""
-    global LAST_CLOSE_TS, LAST_DECISION_BAR_TS, _last_entry_attempt_ts
-    global POST_CHOP_BLOCK_ACTIVE, POST_CHOP_BLOCK_UNTIL_BAR, LAST_CLOSE_BAR_TS
-
-    while True:
-        try:
-            bal = balance_usdt()
-            px  = price_now()
-            df  = fetch_ohlcv()
-            reconcile_state()
-
-            info, ind, zones, candidates, trend, plan = evaluate_all(df)
-
-            spread_bps = orderbook_spread_bps()
-            reason = None
-            
-            if spread_bps is not None and spread_bps > MAX_SPREAD_BPS:
-                reason = f"spread too high ({fmt(spread_bps,2)}bps > {MAX_SPREAD_BPS})"
-
-            since_last_close = time.time() - LAST_CLOSE_TS
-            if reason is None and since_last_close < max(COOLDOWN_SEC, REENTRY_COOLDOWN_SEC):
-                remain = int(max(COOLDOWN_SEC, REENTRY_COOLDOWN_SEC) - since_last_close)
-                reason = f"cooldown {remain}s"
-
-            while TRADE_TIMES and time.time() - TRADE_TIMES[0] > 3600:
-                TRADE_TIMES.popleft()
-            if reason is None and len(TRADE_TIMES) >= MAX_TRADES_PER_HOUR:
-                reason = "rate-limit: too many trades this hour"
-
-            # اختيار أفضل دخول محسن
-            current_bar_ts = _last_closed_bar_ts(df)
-            if reason is None and candidates:
-                best = enhanced_entry_decision(candidates, df, ind, info)
-                
-                if best and LAST_SIGNAL_USED["side"] == best["side"] and \
-                   LAST_SIGNAL_USED["bar_ts"] == current_bar_ts and \
-                   LAST_SIGNAL_USED["src"] == best["src"]:
-                    reason = f"⛔ same signal already used this bar ({best['side']} from {best['src']})"
-                    best = None
-            else:
-                best = None
-
-            if STATE["open"] and px:
-                STATE["pnl"] = (px - STATE["entry"]) * STATE["qty"] if STATE["side"] == "long" else (STATE["entry"] - px) * STATE["qty"]
-                STATE["hp_pct"] = max(STATE.get("hp_pct", 0.0), (px - STATE["entry"]) / STATE["entry"] * 100.0 * (1 if STATE["side"] == "long" else -1))
-                _update_trend_state(ind, {"price": px, **info})
-
-            # استخدام الإدارة المحسنة للصفقة
-            enhanced_manage_position(df, ind, {"price": px or info["price"], **info}, zones, trend)
-
-            bar_ts = _last_closed_bar_ts(df)
-            if POST_CHOP_BLOCK_ACTIVE and bar_ts >= POST_CHOP_BLOCK_UNTIL_BAR:
-                if POST_CHOP_REQUIRE_RF and not (info.get("long") or info.get("short")):
-                    pass
-                else:
-                    POST_CHOP_BLOCK_ACTIVE = False
-
-            if not STATE["open"] and best and reason is None:
-                if _now() - _last_entry_attempt_ts < max(ENTRY_GUARD_WINDOW_SEC, MIN_SIGNAL_AGE_SEC):
-                    reason = "entry guard window"
-                else:
-                    adx_now = float(ind.get("adx") or 0.0)
-                    
-                    # شروط الدخول المشددة
-                    volume_analysis = analyze_volume(df)
-                    entry_conditions_met = (
-                        best.get("final_strength", 0) >= 5.0 and
-                        adx_now >= ADX_ENTRY_MIN and
-                        volume_analysis["volume_ok"] and
-                        abs(float(ind.get("plus_di") or 0) - float(ind.get("minus_di") or 0)) >= 4
-                    )
-                    
-                    if entry_conditions_met:
-                        qty = calculate_position_size(bal, px or info["price"], best["final_strength"])
-                        ok = enhanced_open_market(
-                            "buy" if best["side"] == "buy" else "sell",
-                            qty,
-                            px or info["price"],
-                            best["final_strength"],
-                            f"ELITE_ENHANCED: {best['reason']} | boosts: {best.get('boost_factors', 0)}",
-                            df, ind
-                        )
-                        _last_entry_attempt_ts = _now()
-                        if not ok:
-                            reason = "open failed (elite enhanced conditions)"
-                    else:
-                        reason = f"elite enhanced conditions not met: strength={best.get('final_strength'):.1f} adx={adx_now:.1f} vol_ok={volume_analysis['volume_ok']}"
-
-            # عرض معلومات إضافية
-            enhanced_pretty_snapshot(bal, {"price": px or info["price"], **info}, ind, spread_bps, zones, reason, df)
-
-            if len(df) >= 2 and int(df["time"].iloc[-1]) != int(df["time"].iloc[-2]) and STATE["open"]:
-                STATE["bars"] += 1
-
-            time.sleep(NEAR_CLOSE_S if time_to_candle_close(df) <= 10 else BASE_SLEEP)
-
-        except Exception as e:
-            print(colored(f"❌ loop error: {e}\n{traceback.format_exc()}", "red"))
-            logging.error(f"trade_loop error: {e}\n{traceback.format_exc()}")
-            time.sleep(BASE_SLEEP)
-
-def enhanced_pretty_snapshot(bal, info, ind, spread_bps, zones, reason=None, df=None):
-    """عرض محسن للمعلومات"""
-    left_s = time_to_candle_close(df) if df is not None else 0
-    
-    print(colored("═" * 120, "cyan"))
-    print(colored(f"📊 {SYMBOL} {INTERVAL} • {'LIVE' if MODE_LIVE else 'PAPER'} • {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC", "cyan"))
-    print(colored("═" * 120, "cyan"))
-    
-    # معلومات السوق
-    print("📈 MARKET ANALYSIS")
-    print(f"   💲 Price {fmt(info.get('price'))} | RF filt={fmt(info.get('filter'))} | spread={fmt(spread_bps,2)} bps")
-    print(f"   🧮 RSI={fmt(ind.get('rsi'))}  +DI={fmt(ind.get('plus_di'))}  -DI={fmt(ind.get('minus_di'))}  ADX={fmt(ind.get('adx'))}  ATR={fmt(ind.get('atr'))}")
-    print(f"   📊 MACD={fmt(ind.get('macd_hist'))}  VWAP={fmt(ind.get('vwap'))}  Delta={fmt(ind.get('delta_vol'))}")
-    
-    # تحليل الحجم والشموع
-    volume_analysis = analyze_volume(df)
-    candle_strength = analyze_candle_strength(df, ind)
-    candle_patterns = detect_strong_candle_patterns(df)
-    
-    print(f"   🔊 Volume: {volume_analysis['volume_trend']} (x{fmt(volume_analysis['volume_ratio'],2)})")
-    print(f"   🕯️ Candle: strength={fmt(candle_strength['strength'],2)} momentum={fmt(candle_strength['momentum'],2)}%")
-    
-    # معلومات التداول
-    print(f"   🧠 {STATE.get('scm_line','')}")
-    print(f"   🧊 CHOP={STATE.get('chop_flag', False)} | POST_CHOP_BLOCK={POST_CHOP_BLOCK_ACTIVE}")
-    print(f"   🧭 PLAN={STATE.get('plan','SIT_OUT')} • reasons={STATE.get('plan_reasons',[])}")
-    print(f"   🗳️ votes: BUY={STATE.get('votes_b',0)}({fmt(STATE.get('score_b',0),2)}) SELL={STATE.get('votes_s',0)}({fmt(STATE.get('score_s',0),2)})")
-    print(f"   ⏱️ closes_in ≈ {left_s}s")
-    
-    print("\n🧭 POSITION & MANAGEMENT")
-    bal_line = f"Balance={fmt(bal,2)} Risk={int(RISK_ALLOC*100)}%×{LEVERAGE}x CompoundPnL={fmt(compound_pnl)} Eq~{fmt((bal or 0)+compound_pnl,2)}"
-    print(colored(f"   {bal_line}", "yellow"))
-    
-    if STATE["open"]:
-        lamp = '🟩 LONG' if STATE['side'] == 'long' else '🟥 SHORT'
-        tm = STATE["trade_management"]
-        
-        print(f"   {lamp} Entry={fmt(STATE['entry'])} Qty={fmt(STATE['qty'],4)} Remaining={fmt(STATE.get('remaining_size', STATE['qty']),4)}")
-        print(f"   📊 PnL={fmt(STATE['pnl'],2)} HP={fmt(STATE['hp_pct'],2)}% Bars={STATE['bars']}")
-        print(f"   🛡️ Stop={fmt(tm['current_stop'])} Trail={'✅' if tm['trailing_active'] else '❌'} BreakEven={'✅' if tm['break_even_moved'] else '❌'}")
-        print(f"   🎯 Targets: {len(tm['targets_hit'])}/{len(TAKE_PROFIT_LEVELS)} hit")
-        print(f"   💪 قوة الدخول: {fmt(STATE.get('entry_strength', 0),2)}")
-    else:
-        print("   ⚪ FLAT")
-    
-    if reason:
-        print(colored(f"   ℹ️ reason: {reason}", "white"))
-    
-    print(colored("═" * 120, "cyan"))
-
-# =================== تحديث الدورة الرئيسية لاستخدام النظام المحسن ===================
+# =================== الدورة الرئيسية المحسنة مع نظام SCALP/TREND ===================
 def enhanced_trade_loop_with_smart_system():
     """
-    الدورة الرئيسية المحسنة مع النظام الذكي للتصحيح وإعادة الاختبار
+    الدورة الرئيسية المحسنة مع النظام الذكي للتصحيح وإعادة الاختبار ونظام SCALP/TREND
     """
     global LAST_CLOSE_TS, LAST_DECISION_BAR_TS, _last_entry_attempt_ts
     global POST_CHOP_BLOCK_ACTIVE, POST_CHOP_BLOCK_UNTIL_BAR, LAST_CLOSE_BAR_TS
@@ -2846,6 +2832,51 @@ def enhanced_trade_loop_with_smart_system():
                 TRADE_TIMES.popleft()
             if reason is None and len(TRADE_TIMES) >= MAX_TRADES_PER_HOUR:
                 reason = "rate-limit: too many trades this hour"
+
+            # ===== النظام الجديد: SCALP/TREND مع RSI+MA =====
+            rsi_sig = enhanced_rsi_ma_features(df)
+            adx_val = float(ind.get("adx") or 0.0)
+            
+            # تصنيف نمط التداول
+            trading_mode, mode_reasons = classify_trading_mode(adx_val, rsi_sig)
+            
+            # كشف المنطقة الذهبية
+            gz_signal = None
+            if candidates:
+                main_side = "buy" if candidates[0]["side"] == "buy" else "sell"
+                gz_signal = golden_zone_check(df, ind, main_side)
+            
+            # تحديد الاتجاه المبدئي
+            side_hint = "buy" if STATE.get("votes_b", 0) >= STATE.get("votes_s", 0) else "sell"
+            
+            # تجميع تصويتات المجلس
+            council_votes = {
+                "buy_votes": STATE.get("votes_b", 0),
+                "sell_votes": STATE.get("votes_s", 0), 
+                "score": max(STATE.get("score_b", 0), STATE.get("score_s", 0))
+            }
+            
+            # بوابة الدخول المحسنة
+            entry_ok, entry_reason = enhanced_entry_guard(
+                side_hint, council_votes, gz_signal, adx_val, rsi_sig
+            )
+            
+            # اللوج الجديد
+            print(colored(
+                f"📟 DASH → mode={trading_mode} | hint={side_hint.upper()} | "
+                f"Council B={council_votes['buy_votes']} S={council_votes['sell_votes']} score={council_votes['score']:.1f} | "
+                f"RSI={rsi_sig['rsi']:.1f}/{rsi_sig['rsi_ma']:.1f} cross={rsi_sig['cross']} trendZ={rsi_sig['trendZ_ok']} | "
+                f"ADX={adx_val:.1f}" + 
+                (f" | 🟡 {gz_signal.get('zone',{}).get('type','')} s={gz_signal.get('score',0):.1f}" 
+                 if gz_signal and gz_signal.get('ok') else ""), 
+                "cyan" if trading_mode == "TREND" else "yellow"
+            ))
+            
+            if entry_ok:
+                print(colored(f"🚀 ENTRY CONFIRMED • {trading_mode} • {side_hint.upper()} • {entry_reason}", "green"))
+            else:
+                print(colored(f"⛔ ENTRY BLOCKED • {trading_mode} • {side_hint.upper()} • {entry_reason}", "red"))
+            # ===== نهاية النظام الجديد =====
 
             # استخدام النسخة المحسنة من قرار الدخول
             current_bar_ts = _last_closed_bar_ts(df)
@@ -2893,14 +2924,14 @@ def enhanced_trade_loop_with_smart_system():
                     )
                     
                     if entry_conditions_met:
-                        qty = calculate_position_size(bal, px or info["price"], best["final_strength"])
+                        qty = calculate_position_size(bal, px or info["price"], best["final_strength"], trading_mode)
                         ok = enhanced_open_market(
                             "buy" if best["side"] == "buy" else "sell",
                             qty,
                             px or info["price"],
                             best["final_strength"],
                             f"ELITE_ENHANCED_SMART: {best['reason']} | boosts: {best.get('boost_factors', 0)} | smart: {smart_analysis['reasons']}",
-                            df, ind
+                            df, ind, trading_mode
                         )
                         _last_entry_attempt_ts = _now()
                         if not ok:
@@ -2923,7 +2954,7 @@ def enhanced_trade_loop_with_smart_system():
 
 def enhanced_pretty_snapshot_with_smart_analysis(bal, info, ind, spread_bps, zones, reason=None, df=None):
     """
-    عرض محسن مع معلومات النظام الذكي للتصحيح وإعادة الاختبار
+    عرض محسن مع معلومات النظام الذكي للتصحيح وإعادة الاختبار ونظام SCALP/TREND
     """
     left_s = time_to_candle_close(df) if df is not None else 0
     
@@ -2969,11 +3000,12 @@ def enhanced_pretty_snapshot_with_smart_analysis(bal, info, ind, spread_bps, zon
     if STATE["open"]:
         lamp = '🟩 LONG' if STATE['side'] == 'long' else '🟥 SHORT'
         tm = STATE["trade_management"]
+        trading_mode = STATE.get("trading_mode", "SCALP")
         
-        print(f"   {lamp} Entry={fmt(STATE['entry'])} Qty={fmt(STATE['qty'],4)} Remaining={fmt(STATE.get('remaining_size', STATE['qty']),4)}")
+        print(f"   {lamp} ({trading_mode}) Entry={fmt(STATE['entry'])} Qty={fmt(STATE['qty'],4)} Remaining={fmt(STATE.get('remaining_size', STATE['qty']),4)}")
         print(f"   📊 PnL={fmt(STATE['pnl'],2)} HP={fmt(STATE['hp_pct'],2)}% Bars={STATE['bars']}")
         print(f"   🛡️ Stop={fmt(tm['current_stop'])} Trail={'✅' if tm['trailing_active'] else '❌'} BreakEven={'✅' if tm['break_even_moved'] else '❌'}")
-        print(f"   🎯 Targets: {len(tm['targets_hit'])}/{len(TAKE_PROFIT_LEVELS)} hit")
+        print(f"   🎯 Targets: {len(tm['targets_hit'])}/{len(tm.get('take_profit_targets', []))} hit")
         print(f"   💪 قوة الدخول: {fmt(STATE.get('entry_strength', 0),2)}")
         
         # معلومات النظام الذكي للصفقة المفتوحة
@@ -2994,7 +3026,8 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     mode='LIVE' if MODE_LIVE else 'PAPER'
-    return f"✅ BYBIT SUI BOT PRO — {SYMBOL} {INTERVAL} — {mode} — Council ELITE PRO PLUS (المتداول المحترف المتكامل)"
+    trading_mode = STATE.get("trading_mode", "SCALP")
+    return f"✅ BYBIT SUI BOT PRO — {SYMBOL} {INTERVAL} — {mode} — Council ELITE PRO PLUS (المتداول المحترف المتكامل) — MODE: {trading_mode}"
 
 @app.route("/metrics")
 def metrics():
@@ -3003,7 +3036,9 @@ def metrics():
         "leverage": LEVERAGE, "risk_alloc": RISK_ALLOC, "price": price_now(),
         "state": STATE, "compound_pnl": compound_pnl,
         "guards": {"max_spread_bps": MAX_SPREAD_BPS, "post_chop_block": POST_CHOP_BLOCK_ACTIVE},
-        "last_signal": LAST_SIGNAL_USED
+        "last_signal": LAST_SIGNAL_USED,
+        "trading_mode": STATE.get("trading_mode", "SCALP"),
+        "rsi_ma_signal": STATE.get("rsi_ma_signal", {})
     })
 
 @app.route("/health")
@@ -3016,7 +3051,9 @@ def health():
         "chop": STATE.get("chop_flag", False), "post_chop_block": POST_CHOP_BLOCK_ACTIVE,
         "plan": STATE.get("plan"), "votes_b": STATE.get("votes_b",0), "votes_s": STATE.get("votes_s",0),
         "macd_trend": STATE.get("macd_trend"), "vwap_trend": STATE.get("vwap_trend"),
-        "entry_strength": STATE.get("entry_strength", 0)
+        "entry_strength": STATE.get("entry_strength", 0),
+        "trading_mode": STATE.get("trading_mode", "SCALP"),
+        "rsi_ma": STATE.get("rsi_ma_signal", {})
     }), 200
 
 def keepalive_loop():
@@ -3055,3 +3092,4 @@ if __name__ == "__main__":
         app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
     except Exception as e:
         print(colored(f"Flask run error: {e}", "red"))
+[file content end]
