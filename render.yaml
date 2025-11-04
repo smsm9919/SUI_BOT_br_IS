@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: sol-bybit-bot
+    name: sui-bot-z
     env: python
     plan: free
     region: frankfurt
