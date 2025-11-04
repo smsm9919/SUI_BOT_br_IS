@@ -1,5 +1,4 @@
-[file name]: main.py
-[file content begin]
+
 # file: sui_bot_council_elite_pro_enhanced.py
 # -*- coding: utf-8 -*-
 """
