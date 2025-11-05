@@ -130,7 +130,7 @@ COUNCIL_STRONG_SCORE_MIN = 5.0 # زيادة من 4.0 إلى 5.0
 # شروط إضافية للقوة
 MIN_CONFIRMATION_SIGNALS = 5   # زيادة من 4 إلى 5
 TREND_ALIGNMENT_BONUS = 2.0    # زيادة من 1.5 إلى 2.0
-VOLUME_CONFIRMATION_REQUIRED = True  # تأكيد الحجم مطلوب
+VOLUME_CONFIRMATION_REQUIRED = False  # تأكيد الحجم مطلوب
 
 # الانزلاق
 MAX_SLIP_OPEN_BPS   = 25.0
