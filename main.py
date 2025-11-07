@@ -125,6 +125,13 @@ GOLDEN_ENTRY_SCORE = 6.0
 GOLDEN_ENTRY_ADX   = 20.0
 GOLDEN_REVERSAL_SCORE = 6.5
 
+# ==== Golden Zone Constants ====
+FIB_LOW, FIB_HIGH = 0.618, 0.786
+MIN_WICK_PCT = 0.35
+VOL_MA_LEN = 20
+RSI_LEN_GZ, RSI_MA_LEN_GZ = 14, 9
+MIN_DISP = 0.8
+
 # ==== Execution & Strategy Thresholds ====
 ADX_TREND_MIN = 20
 DI_SPREAD_TREND = 6
@@ -395,90 +402,188 @@ def rsi_ma_context(df):
         "in_chop": in_chop
     }
 
+# =================== SMART GOLDEN ZONE DETECTION ===================
+def _ema_gz(series, n):
+    """المتوسط المتحرك الأسي للمنطقة الذهبية"""
+    return series.ewm(span=n, adjust=False).mean()
+
+def _rsi_fallback_gz(close, n=14):
+    """RSI بديل محسّن"""
+    delta = close.diff()
+    up = delta.clip(lower=0)
+    down = (-delta).clip(lower=0)
+    roll_up = up.ewm(span=n, adjust=False).mean()
+    roll_down = down.ewm(span=n, adjust=False).mean()
+    rs = roll_up / roll_down.replace(0, 1e-12)
+    rsi = 100 - (100/(1+rs))
+    return rsi.fillna(50)
+
+def _body_wicks_gz(h, l, o, c):
+    """حساب الجسم والفتائل بدقة"""
+    rng = max(1e-9, h - l)
+    body = abs(c - o) / rng
+    up_wick = (h - max(c, o)) / rng
+    low_wick = (min(c, o) - l) / rng
+    return body, up_wick, low_wick
+
+def _displacement_gz(closes):
+    """قياس اندفاع السعر"""
+    if len(closes) < 22:
+        return 0.0
+    recent_std = closes.tail(20).std()
+    return abs(closes.iloc[-1] - closes.iloc[-2]) / max(recent_std, 1e-9)
+
+def _last_impulse_gz(df):
+    """اكتشاف آخر موجة دافعة بدقة"""
+    h = df["high"].astype(float)
+    l = df["low"].astype(float)
+    
+    # البحث عن القمة والقاع في آخر 120 شمعة
+    lookback = min(120, len(df))
+    recent_highs = h.tail(lookback)
+    recent_lows = l.tail(lookback)
+    
+    hh_idx = recent_highs.idxmax()
+    ll_idx = recent_lows.idxmin()
+    
+    hh = recent_highs.max()
+    ll = recent_lows.min()
+    
+    # تحديد اتجاه الدافع
+    if hh_idx < ll_idx:  # قمة ثم قاع => دافع هابط
+        return ("down", hh_idx, ll_idx, hh, ll)
+    else:  # قاع ثم قمة => دافع صاعد
+        return ("up", ll_idx, hh_idx, ll, hh)
+
 def golden_zone_check(df, ind=None, side_hint=None):
-    """اكتشاف المناطق الذهبية (فيبو 0.618-0.786) مع تأكيدات"""
-    if len(df) < 30:
+    """اكتشاف المناطق الذهبية بدقة محسنة"""
+    if len(df) < 60:
         return {"ok": False, "score": 0.0, "zone": None, "reasons": ["short_df"]}
     
     try:
+        # استخراج البيانات
         h = df['high'].astype(float)
         l = df['low'].astype(float)
         c = df['close'].astype(float)
+        o = df['open'].astype(float)
         v = df['volume'].astype(float)
         
-        swing_hi = h.rolling(10).max().iloc[-1]
-        swing_lo = l.rolling(10).min().iloc[-1]
+        # اكتشاف الدافع الأخير
+        impulse_data = _last_impulse_gz(df)
+        if not impulse_data:
+            return {"ok": False, "score": 0.0, "zone": None, "reasons": ["no_clear_impulse"]}
+            
+        side, idx1, idx2, p1, p2 = impulse_data
         
-        if swing_hi <= swing_lo:
-            return {"ok": False, "score": 0.0, "zone": None, "reasons": ["flat_market"]}
+        # حساب فيبوناتشي بناءً على اتجاه الدافع
+        if side == "down":
+            # دافع هابط: التصحيح الصاعد بين 0.618-0.786 من الهبوط
+            swing_hi, swing_lo = p1, p2
+            f618 = swing_lo + FIB_LOW * (swing_hi - swing_lo)
+            f786 = swing_lo + FIB_HIGH * (swing_hi - swing_lo)
+            zone_type = "golden_bottom"
+        else:
+            # دافع صاعد: التصحيح الهابط بين 0.618-0.786 من الصعود
+            swing_lo, swing_hi = p1, p2
+            f618 = swing_hi - FIB_HIGH * (swing_hi - swing_lo)
+            f786 = swing_hi - FIB_LOW * (swing_hi - swing_lo)
+            zone_type = "golden_top"
         
-        f618 = swing_lo + 0.618 * (swing_hi - swing_lo)
-        f786 = swing_lo + 0.786 * (swing_hi - swing_lo)
         last_close = float(c.iloc[-1])
+        in_zone = (f618 <= last_close <= f786) if side == "down" else (f786 <= last_close <= f618)
         
-        vol_ma20 = v.rolling(20).mean().iloc[-1]
-        vol_ok = float(v.iloc[-1]) >= vol_ma20 * 0.8
+        if not in_zone:
+            return {"ok": False, "score": 0.0, "zone": None, "reasons": [f"price_not_in_zone {last_close:.6f} vs [{f618:.6f},{f786:.6f}]"]}
         
-        current_open = float(df['open'].iloc[-1])
+        # الشروط المساعدة
         current_high = float(h.iloc[-1])
         current_low = float(l.iloc[-1])
+        current_open = float(o.iloc[-1])
         
-        body = abs(last_close - current_open)
-        wick_up = current_high - max(last_close, current_open)
-        wick_down = min(last_close, current_open) - current_low
+        body, up_wick, low_wick = _body_wicks_gz(current_high, current_low, current_open, last_close)
         
-        bull_candle = wick_down > (body * 1.2) and last_close > current_open
-        bear_candle = wick_up > (body * 1.2) and last_close < current_open
+        # حجم التداول
+        vol_ma = v.rolling(VOL_MA_LEN).mean().iloc[-1]
+        vol_ok = float(v.iloc[-1]) >= vol_ma * 0.9  # تخفيف الشرط قليلاً
         
+        # RSI
+        rsi_series = _rsi_fallback_gz(c, RSI_LEN_GZ)
+        rsi_ma_series = _ema_gz(rsi_series, RSI_MA_LEN_GZ)
+        rsi_last = float(rsi_series.iloc[-1])
+        rsi_ma_last = float(rsi_ma_series.iloc[-1])
+        
+        # ADX من المؤشرات المحسوبة مسبقاً
         adx = ind.get('adx', 0) if ind else 0
-        rsi_ctx = rsi_ma_context(df)
         
+        # اندفاع السعر
+        disp = _displacement_gz(c)
+        
+        # فتيلة مناسبة حسب الاتجاه
+        if side == "down":  # نبحث عن فتيلة سفلية للشراء
+            wick_ok = low_wick >= MIN_WICK_PCT
+            rsi_ok = rsi_last > rsi_ma_last and rsi_last < 70
+            candle_bullish = last_close > current_open
+        else:  # نبحث عن فتيلة علوية للبيع
+            wick_ok = up_wick >= MIN_WICK_PCT
+            rsi_ok = rsi_last < rsi_ma_last and rsi_last > 30
+            candle_bullish = last_close < current_open
+        
+        # حساب النقاط
         score = 0.0
-        zone_type = None
         reasons = []
         
-        if f618 <= last_close <= f786 and bull_candle:
-            score += 4.0
-            reasons.append("فيبو_قاع+شمعة_صاعدة")
-            if adx >= GZ_REQ_ADX:
-                score += 2.0
-                reasons.append("ADX_قوي")
-            if rsi_ctx["cross"] == "bull" or rsi_ctx["trendZ"] == "bull":
-                score += 1.5
-                reasons.append("RSI_إيجابي")
-            if vol_ok:
-                score += 0.5
-                reasons.append("حجم_مرتفع")
-            
-            if score >= GZ_MIN_SCORE:
-                zone_type = "golden_bottom"
+        # الشروط الأساسية
+        if adx >= GZ_REQ_ADX:
+            score += 2.0
+            reasons.append(f"ADX_{adx:.1f}")
         
-        elif f618 <= last_close <= f786 and bear_candle:
-            score += 4.0
-            reasons.append("فيبو_قمة+شمعة_هابطة")
-            if adx >= GZ_REQ_ADX:
-                score += 2.0
-                reasons.append("ADX_قوي")
-            if rsi_ctx["cross"] == "bear" or rsi_ctx["trendZ"] == "bear":
-                score += 1.5
-                reasons.append("RSI_سلبي")
-            if vol_ok:
-                score += 0.5
-                reasons.append("حجم_مرتفع")
-            
-            if score >= GZ_MIN_SCORE:
-                zone_type = "golden_top"
+        if disp >= MIN_DISP:
+            score += 1.5
+            reasons.append(f"DISP_{disp:.2f}")
         
-        ok = zone_type is not None and ALLOW_GZ_ENTRY
+        if wick_ok:
+            score += 1.5
+            reasons.append("wick_ok")
+        
+        if vol_ok:
+            score += 1.0
+            reasons.append("vol_ok")
+        
+        if rsi_ok:
+            score += 1.5
+            reasons.append("rsi_ok")
+        
+        if candle_bullish:
+            score += 0.5
+            reasons.append("candle_confirm")
+        
+        # شرط المنطقة
+        score += 2.0
+        reasons.append("in_zone")
+        
+        # النتيجة النهائية
+        ok = (score >= GZ_MIN_SCORE and in_zone and adx >= GZ_REQ_ADX)
+        
+        # تشخيص تفصيلي
+        if LOG_ADDONS and in_zone:
+            print(f"[GZ DEBUG] type={zone_type} zone={f618:.6f}-{f786:.6f} price={last_close:.6f} score={score:.1f} adx={adx:.1f} disp={disp:.2f} wick_ok={wick_ok} vol_ok={vol_ok} rsi_ok={rsi_ok}")
+        
         return {
             "ok": ok,
-            "score": score,
-            "zone": {"type": zone_type, "f618": f618, "f786": f786} if zone_type else None,
+            "score": round(score, 2),
+            "zone": {
+                "type": zone_type,
+                "f618": f618,
+                "f786": f786,
+                "swing_high": swing_hi if side == "down" else swing_lo,
+                "swing_low": swing_lo if side == "down" else swing_hi
+            } if ok else None,
             "reasons": reasons
         }
         
     except Exception as e:
-        return {"ok": False, "score": 0.0, "zone": None, "reasons": [f"error: {e}"]}
+        log_w(f"golden_zone_check error: {e}")
+        return {"ok": False, "score": 0.0, "zone": None, "reasons": [f"error: {str(e)}"]}
 
 def decide_strategy_mode(df, adx=None, di_plus=None, di_minus=None, rsi_ctx=None):
     """تحديد نمط التداول: SCALP أم TREND"""
