@@ -428,7 +428,7 @@ def save_state(state: dict):
         }
         with open(STATE_PATH, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-        log_i(f"state saved → {STATE_PATH}")
+        log_i(f"state saved -> {STATE_PATH}")
     except Exception as e:
         log_w(f"state save failed: {e}")
 
@@ -503,7 +503,7 @@ def load_market_specs():
         AMT_PREC = int((MARKET.get("precision", {}) or {}).get("amount", 0) or 0)
         LOT_STEP = (MARKET.get("limits", {}) or {}).get("amount", {}).get("step", None)
         LOT_MIN  = (MARKET.get("limits", {}) or {}).get("amount", {}).get("min",  None)
-        log_i(f"🎯 {SYMBOL} specs → precision={AMT_PREC}, step={LOT_STEP}, min={LOT_MIN}")
+        log_i(f"🎯 {SYMBOL} specs -> precision={AMT_PREC}, step={LOT_STEP}, min={LOT_MIN}")
     except Exception as e:
         log_w(f"load_market_specs: {e}")
 
@@ -650,7 +650,7 @@ def _round_amt(q):
 
 def safe_qty(q): 
     q = _round_amt(q)
-    if q<=0: log_w(f"qty invalid after normalize → {q}")
+    if q<=0: log_w(f"qty invalid after normalize -> {q}")
     return q
 
 def fmt(v, d=6, na="—"):
@@ -804,7 +804,7 @@ def compute_advanced_indicators(df):
             'stoch_d': last_scalar(stoch_d),
             'atr': last_scalar(atr),
             'bollinger_upper': last_scalar(bollinger_upper),
-            'bollinger_liddle': last_scalar(bollinger_middle),
+            'bollinger_middle': last_scalar(bollinger_middle),
             'bollinger_lower': last_scalar(bollinger_lower),
             'obv': last_scalar(obv),
             'adx': last_scalar(adx),
@@ -1247,7 +1247,7 @@ def intelligent_exit_decision(pnl_pct, side, indicators, market_phase, volatilit
         for i, target in enumerate(tp_targets):
             tp_key = f"tp_{i+1}_done"
             if not STATE.get(tp_key, False) and pnl_pct >= target:
-                close_pct = 0.2 if i < 3 else 0.15  % 20% للأهداف الأولى، 15% للبقية
+                close_pct = 0.2 if i < 3 else 0.15  # 20% للأهداف الأولى، 15% للبقية
                 return {
                     "action": "partial",
                     "qty_pct": close_pct,
