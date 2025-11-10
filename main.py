@@ -104,7 +104,7 @@ TREND_TPS       = [0.50, 1.00, 1.80]
 TREND_TP_FRACS  = [0.30, 0.30, 0.20]
 
 # Dust guard
-FINAL_CHUNK_QTY = float(os.getenv("FINAL_CHUNK_QTY", 50.0))
+FINAL_CHUNK_QTY = float(os.getenv("FINAL_CHUNK_QTY", 2.0))
 RESIDUAL_MIN_QTY = float(os.getenv("RESIDUAL_MIN_QTY", 10.0))
 
 # Strict close
