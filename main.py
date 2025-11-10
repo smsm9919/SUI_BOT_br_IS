@@ -1,19 +1,19 @@
 # file: sui_bot_pro_hunter.py
 # -*- coding: utf-8 -*-
 """
-BYBIT/BINGX — SUI Perp Council PRO HUNTER
+SUI Perp — Council PRO HUNTER
 - Council: RF + ADX/DI + RSI + MACA + SMC(OB/FVG/BOS/ICT) + Footprint/Flow + Volume/ATR
-- Pro-Hunter (early trend) + Golden Force Entry (قاع/قمة ذهبية مؤكدة)
-- Scalp Guard: لا سكالب إلا لو EV بعد الخصوم موجب وكافي + قوة صفقة مرتفعة
-- Dynamic TP (1/2/3) + Breakeven + ATR Trailing + Ratchet + Golden Reversal
-- Execution Guards: Spread / Wait-next RF / One-Position
+- Pro-Hunter + Golden-Force hooks
+- Scalp Guard: يمنع السكالب الضعيف (EV بعد الخصوم + قوة)
+- Dynamic TP (1/2/3) + Breakeven + ATR Trailing + Ratchet
+- Guards: Spread / Wait-next RF / One-Position
 - Ops: /health /metrics + keepalive
 """
 
-import os, time, math, json, logging, threading, traceback
+import os, time, math, logging, threading, traceback
 from datetime import datetime
 from collections import deque
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -21,24 +21,25 @@ import ccxt
 from flask import Flask, jsonify
 
 # ===========================
-#         SETTINGS
+# SETTINGS
 # ===========================
 SYMBOL             = os.getenv("SYMBOL", "SUI/USDT:USDT")
-EXCHANGE_NAME      = os.getenv("EXCHANGE", "bybit").lower()        # bybit | bingx
+EXCHANGE_NAME      = os.getenv("EXCHANGE", "bybit").lower()           # bybit | bingx
 API_KEY            = os.getenv("API_KEY", os.getenv("BYBIT_API_KEY", os.getenv("BINGX_API_KEY", "")))
 API_SECRET         = os.getenv("API_SECRET", os.getenv("BYBIT_API_SECRET", os.getenv("BINGX_API_SECRET", "")))
 POSITION_MODE      = os.getenv("POSITION_MODE", "oneway")
 LEVERAGE           = int(os.getenv("LEVERAGE", "10"))
+RISK_ALLOC         = float(os.getenv("RISK_ALLOC", "0.60"))            # 60% من الرصيد
 TIMEFRAME          = os.getenv("TIMEFRAME", "15m")
 LOOKBACK_BARS      = int(os.getenv("LOOKBACK_BARS", "400"))
 LOOP_SLEEP_SEC     = float(os.getenv("LOOP_SLEEP_SEC", "6.0"))
 DRY_RUN            = bool(int(os.getenv("DRY_RUN", "0")))
 
-# RF + دخول/انتظار
+# RF + انتظار بعد الإغلاق
 RF_PERIOD          = int(os.getenv("RF_PERIOD", "20"))
 RF_MULT            = float(os.getenv("RF_MULT", "3.5"))
-ENTRY_RF_ONLY      = bool(int(os.getenv("ENTRY_RF_ONLY", "0")))    # يلزم انقلاب RF للدخول
-WAIT_NEXT_SIGNAL   = bool(int(os.getenv("WAIT_NEXT_SIGNAL", "1"))) # انتظار الشمعة التالية بعد إغلاق بعكس RF
+ENTRY_RF_ONLY      = bool(int(os.getenv("ENTRY_RF_ONLY", "0")))
+WAIT_NEXT_SIGNAL   = bool(int(os.getenv("WAIT_NEXT_SIGNAL", "1")))
 
 # Guards
 MAX_SPREAD_BPS     = float(os.getenv("MAX_SPREAD_BPS", "8.0"))
@@ -47,19 +48,19 @@ MAX_TRADES_PER_HR  = int(os.getenv("MAX_TRADES_PER_HR", "8"))
 COOLDOWN_AFTER_CLOSE_SEC = int(os.getenv("COOLDOWN_AFTER_CLOSE_SEC", "30"))
 
 # Council thresholds
-ULTIMATE_MIN_CONFIDENCE = float(os.getenv("ULTIMATE_MIN_CONFIDENCE", "7.0"))  # يُخفض إلى 6 مع Footprint قوي
+ULTIMATE_MIN_CONFIDENCE = float(os.getenv("ULTIMATE_MIN_CONFIDENCE", "7.0"))
 SELL_SUPERIORITY        = float(os.getenv("SELL_SUPERIORITY", "1.0"))
 BUY_SUPERIORITY         = float(os.getenv("BUY_SUPERIORITY",  "1.0"))
 
-# Pro Hunter (التقاط بداية الترند)
+# Pro-Hunter
 PROACTIVE_HUNTER          = bool(int(os.getenv("PROACTIVE_HUNTER", "1")))
 HUNTER_STRONG_SCORE       = float(os.getenv("HUNTER_STRONG_SCORE", "6.5"))
 HUNTER_TREND_GATE_ADX     = float(os.getenv("HUNTER_TREND_GATE_ADX", "20"))
-HUNTER_MIN_DISPLACEMENT   = float(os.getenv("HUNTER_MIN_DISPLACEMENT", "0.004"))  # 0.4%
+HUNTER_MIN_DISPLACEMENT   = float(os.getenv("HUNTER_MIN_DISPLACEMENT", "0.004"))
 HUNTER_VOL_BURST_MULT     = float(os.getenv("HUNTER_VOL_BURST_MULT", "1.6"))
 HUNTER_FLOW_MIN_BIAS      = float(os.getenv("HUNTER_FLOW_MIN_BIAS", "0.8"))
 
-# Golden force entry (اربطها بكاشفك الذهبي لاحقًا أو اترك False)
+# Golden force (هوكس—اربطه بكاشفك لاحقًا)
 GOLDEN_FORCE_ENTRY        = bool(int(os.getenv("GOLDEN_FORCE_ENTRY", "1")))
 GOLDEN_SCORE_GATE         = float(os.getenv("GOLDEN_SCORE_GATE", "6.0"))
 GOLDEN_ADX_GATE           = float(os.getenv("GOLDEN_ADX_GATE", "20"))
@@ -84,7 +85,7 @@ TP2_PCT_BASE = float(os.getenv("TP2_PCT_BASE", "0.90"))
 TP3_PCT_BASE = float(os.getenv("TP3_PCT_BASE", "1.60"))
 TP_LADDER_QTY = os.getenv("TP_LADDER_QTY", "40,35,25")
 
-# Scalp Guard (لا سكالب إلا لو مجدي بعد الخصوم + قوي)
+# Scalp Guard
 FEES_TAKER_BPS          = float(os.getenv("FEES_TAKER_BPS", "7.0"))
 FEES_MAKER_BPS          = float(os.getenv("FEES_MAKER_BPS", "2.0"))
 SLIPPAGE_BPS_BASE       = float(os.getenv("SLIPPAGE_BPS_BASE", "3.0"))
@@ -100,13 +101,13 @@ KEEPALIVE_INTERVAL = int(os.getenv("KEEPALIVE_INTERVAL", "50"))
 PORT               = int(os.getenv("PORT", "5000"))
 
 # ===========================
-#       LOGGING
+# LOGGING
 # ===========================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("PRO-HUNTER")
 
 # ===========================
-#       EXCHANGE
+# EXCHANGE
 # ===========================
 def build_exchange():
     if EXCHANGE_NAME == "bybit":
@@ -123,7 +124,7 @@ def build_exchange():
 exchange = build_exchange()
 
 # ===========================
-#     DATA / INDICATORS
+# DATA & INDICATORS
 # ===========================
 def fetch_ohlcv(symbol, timeframe, limit=LOOKBACK_BARS):
     return exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
@@ -225,7 +226,7 @@ def detect_ict(df, min_disp=0.004):
     return bull_retest, bear_retest
 
 # ===========================
-#     FLOW / FOOTPRINT
+# FLOW / FOOTPRINT
 # ===========================
 def get_orderbook_snapshot(symbol) -> Dict:
     try:
@@ -237,7 +238,6 @@ def get_orderbook_snapshot(symbol) -> Dict:
         return {"best_bid": 0, "best_ask": 0}
 
 def compute_flow_metrics(df) -> Dict:
-    # مُبسّط: CVD/Delta تقريبية + footprint bias
     close = df["close"].values
     vol   = df["volume"].values
     delta = (np.sign(np.diff(close, prepend=close[0])) * vol)
@@ -246,12 +246,12 @@ def compute_flow_metrics(df) -> Dict:
     return {"delta": float(delta[-1]), "cvd": cvd, "fp_bias": bias}
 
 # ===========================
-#         COUNCIL
+# COUNCIL
 # ===========================
 def compute_indicators(df: pd.DataFrame) -> Dict:
     adx, di_plus, di_minus, atr = compute_adx(df, 14)
     rsi = compute_rsi(df["close"], 14)
-    rf_sig, rf_up, rf_dn = compute_range_filter(df, RF_PERIOD, RF_MULT)
+    rf_sig, _, _ = compute_range_filter(df, RF_PERIOD, RF_MULT)
     maca = compute_maca(df["close"].values, MACA_FAST, MACA_SLOW, MACA_ANGLE_LEN)
     bos_up, bos_dn = detect_bos(df, lb=5) if ENABLE_SMC_BOS else (False, False)
     ob_bull, ob_bear = detect_order_blocks(df, SMC_LOOKBACK, SMC_MIN_DISP) if ENABLE_SMC_OB else (False, False)
@@ -278,10 +278,7 @@ def compute_indicators(df: pd.DataFrame) -> Dict:
     return indicators
 
 def compute_min_confidence_with_footprint(base_min: float, fp_bias: float) -> float:
-    # Footprint قوي يخفض العتبة
-    if abs(fp_bias) >= 0.8:
-        return min(base_min, 6.0)
-    return base_min
+    return min(base_min, 6.0) if abs(fp_bias) >= 0.8 else base_min
 
 def early_trend_detector(df, indicators, flow_metrics):
     c = df['close'].values
@@ -312,31 +309,23 @@ def early_trend_detector(df, indicators, flow_metrics):
 def council_decision(df: pd.DataFrame, indicators: Dict, flow_metrics: Dict, state: Dict) -> Tuple[str, Dict, float]:
     council = {"votes_b":0.0, "votes_s":0.0, "score_b":0.0, "score_s":0.0, "debug":{}}
 
-    # RF اتجاه مبدئي
     rf_sig = indicators["rf_sig"]
-    if rf_sig > 0:
-        council["votes_b"] += 1; council["score_b"] += 0.8
-    elif rf_sig < 0:
-        council["votes_s"] += 1; council["score_s"] += 0.8
+    if rf_sig > 0: council["votes_b"] += 1; council["score_b"] += 0.8
+    elif rf_sig < 0: council["votes_s"] += 1; council["score_s"] += 0.8
 
-    # ADX/Trend
     adx = indicators["adx"]; di_p = indicators["di_plus"]; di_m = indicators["di_minus"]
     strong_trend = adx >= 28 and abs(di_p - di_m) >= 8
     if strong_trend:
         if di_p > di_m: council["votes_b"] += 3; council["score_b"] += 1.5
         else:           council["votes_s"] += 3; council["score_s"] += 1.5
 
-    # RSI حياد يخفّض الثقة
     rsi = indicators["rsi"]
-    neutral = 45 <= rsi <= 55
-    damp = 0.8 if neutral else 1.0
+    damp = 0.8 if 45 <= rsi <= 55 else 1.0
 
-    # ATR/Volume
     if indicators["volume"] > indicators["vol_ma20"] * 1.4:
         if rf_sig > 0: council["score_b"] += 1.2
         elif rf_sig < 0: council["score_s"] += 1.2
 
-    # SMC (OB/FVG/BOS/ICT)
     if ENABLE_SMC_BOS:
         if indicators["bos_up"]: council["votes_b"] += 2; council["score_b"] += 1.2
         if indicators["bos_dn"]: council["votes_s"] += 2; council["score_s"] += 1.2
@@ -347,72 +336,57 @@ def council_decision(df: pd.DataFrame, indicators: Dict, flow_metrics: Dict, sta
         if indicators["fvg_bull"]: council["votes_b"] += 1; council["score_b"] += 0.8
         if indicators["fvg_bear"]: council["votes_s"] += 1; council["score_s"] += 0.8
     if ENABLE_SMC_ICT:
-        ict_b, ict_s = indicators["ict_bull"], indicators["ict_bear"]
-        if ict_b: council["votes_b"] += 2; council["score_b"] += 1.6
-        if ict_s: council["votes_s"] += 2; council["score_s"] += 1.6
+        if indicators["ict_bull"]: council["votes_b"] += 2; council["score_b"] += 1.6
+        if indicators["ict_bear"]: council["votes_s"] += 2; council["score_s"] += 1.6
 
-    # MACA
     maca = indicators["maca"]
     if maca.get("cross_up") and maca.get("angle_deg",0) >= MACA_MIN_ANGLE:
         council["votes_b"] += 2; council["score_b"] += 1.0
     if maca.get("cross_dn") and abs(maca.get("angle_deg",0)) >= MACA_MIN_ANGLE:
         council["votes_s"] += 2; council["score_s"] += 1.0
 
-    # Footprint
-    fp_bias = flow_metrics.get("fp_bias", 0.0)  # [-1..1]
+    fp_bias = flow_metrics.get("fp_bias", 0.0)
     min_confidence = compute_min_confidence_with_footprint(ULTIMATE_MIN_CONFIDENCE, fp_bias)
 
-    # Early-trend Hunter
     hunter_b, hunter_s, hunter_why = early_trend_detector(df, indicators, flow_metrics)
     council["score_b"] += hunter_b; council["score_s"] += hunter_s
     council["votes_b"] += (1 if hunter_b >= 1.0 else 0)
     council["votes_s"] += (1 if hunter_s >= 1.0 else 0)
     council["debug"]["hunter"] = {"b": hunter_b, "s": hunter_s, "why": hunter_why}
 
-    # Golden hints (اربطها لاحقًا بكاشف القاع/القمة الذهبية الحقيقي لديك)
     golden_bottom = bool(state.get("golden_bottom", False))
     golden_top    = bool(state.get("golden_top", False))
     adx_val = adx
 
-    # قرار أساسي
     decision, reasons = "WAIT", []
     b_ok = (council["score_b"]*damp) >= min_confidence and (council["score_b"] > council["score_s"] + BUY_SUPERIORITY)
     s_ok = (council["score_s"]*damp) >= min_confidence and (council["score_s"] > council["score_b"] + SELL_SUPERIORITY)
     if b_ok: decision="BUY"; reasons.append("std-buy")
     elif s_ok: decision="SELL"; reasons.append("std-sell")
 
-    # Golden force entry
     if decision=="WAIT" and GOLDEN_FORCE_ENTRY and adx_val >= GOLDEN_ADX_GATE:
         if golden_bottom and (council["score_b"] >= GOLDEN_SCORE_GATE):
             decision="BUY"; reasons.append("golden-force")
         elif golden_top and (council["score_s"] >= GOLDEN_SCORE_GATE):
             decision="SELL"; reasons.append("golden-force")
 
-    # Proactive Hunter
     if decision=="WAIT" and PROACTIVE_HUNTER and adx_val >= HUNTER_TREND_GATE_ADX:
         if hunter_b >= HUNTER_STRONG_SCORE: decision="BUY"; reasons.append("hunter-early-trend")
         elif hunter_s >= HUNTER_STRONG_SCORE: decision="SELL"; reasons.append("hunter-early-trend")
 
-    # ---- SCALP PROFIT GUARD: لا سكالب إلا لو مجدي وقوي ----
+    # ---- Scalp Guard ----
     if decision in ("BUY","SELL"):
-        side = decision
-        target_pct = TP1_PCT_BASE  # أقل هدف كمؤشر لتصنيف السكالب
+        target_pct = TP1_PCT_BASE
         is_scalp = (target_pct <= SCALP_MAX_TP_PCT)
-
-        # تكاليف: سبريد + انزلاق + عمولة taker
         book = get_orderbook_snapshot(SYMBOL)
         spread_bps = ((book.get("best_ask",0) - book.get("best_bid",0)) / max(1e-9, (book.get("best_ask",0)+book.get("best_bid",0))/2))*10000 if book.get("best_ask",0) and book.get("best_bid",0) else 0.0
         slip_bps = SLIPPAGE_BPS_BASE + SLIPPAGE_BPS_ATR_MULT * (indicators["atr_pct"]*100.0)
         total_cost = FEES_TAKER_BPS + spread_bps + slip_bps
         edge_bps = (target_pct*100.0) - total_cost
-
-        # قوة الصفقة
         maca_angle = abs(maca.get("angle_deg", 0.0))
-        strength = float((council["score_b"] if side=="BUY" else council["score_s"]) + (adx_val/10.0) + abs(fp_bias) + (maca_angle/15.0))
-
+        strength = float((council["score_b"] if decision=="BUY" else council["score_s"]) + (adx_val/10.0) + abs(fp_bias) + (maca_angle/15.0))
         council["debug"]["scalp_guard"] = {"is_scalp": is_scalp, "edge_bps": round(edge_bps,2),
                                            "total_cost_bps": round(total_cost,2), "strength": round(strength,2)}
-
         if is_scalp:
             blocked = False
             if SCALP_ALLOW_ONLY_IF_POS and edge_bps < SCALP_MIN_EDGE_BPS:
@@ -425,12 +399,12 @@ def council_decision(df: pd.DataFrame, indicators: Dict, flow_metrics: Dict, sta
     return decision, council, min_confidence
 
 # ===========================
-#   EXECUTION / POSITION
+# EXECUTION / POSITION
 # ===========================
 state = {
-    "position": None,             # {"side":"LONG/SHORT","qty":..., "entry":...}
-    "last_close_side": None,      # "BUY"/"SELL"
-    "wait_for_next_signal_side": None,  # "BUY"/"SELL"
+    "position": None,
+    "last_close_side": None,
+    "wait_for_next_signal_side": None,
     "cooldown_until": 0,
     "compound_pnl": 0.0,
     "golden_bottom": False,
@@ -442,7 +416,7 @@ def fetch_position():
     try:
         positions = exchange.fetch_positions([SYMBOL])
         for p in positions:
-            amt = float(p.get("contracts") or p.get("contractSize") or p.get("positionAmt") or 0.0)
+            amt = float(p.get("contracts") or p.get("positionAmt") or 0.0)
             if abs(amt) > 0:
                 entry = float(p.get("entryPrice") or 0.0)
                 side  = "LONG" if amt > 0 else "SHORT"
@@ -458,10 +432,6 @@ def place_order(side: str, qty: float):
     typ = "buy" if side=="BUY" else "sell"
     return exchange.create_order(SYMBOL, "market", typ, qty)
 
-def place_tp_partial(symbol, side, entry_price, pct_target, qty_pct):
-    # تنفيذ جزئي ماركت لحظة تحقق الهدف (يتم تشغيله من حلقة الإدارة)
-    return {"target_pct": pct_target, "qty_pct": qty_pct}
-
 def close_position(full: bool=True, qty: Optional[float]=None):
     pos = state["position"]
     if not pos: return
@@ -470,7 +440,7 @@ def close_position(full: bool=True, qty: Optional[float]=None):
     return place_order(side, q)
 
 # ===========================
-#    TRADE MANAGEMENT
+# TRADE MANAGEMENT
 # ===========================
 def dynamic_tp_plan(side: str, indicators: Dict, council: Dict, flow: Dict):
     side_score = (council.get("score_b",0) if side=="BUY" else council.get("score_s",0))
@@ -491,15 +461,12 @@ def dynamic_tp_plan(side: str, indicators: Dict, council: Dict, flow: Dict):
 def manage_open_trade(df, indicators, council, flow):
     pos = state["position"]
     if not pos: return
-
     entry = pos["entry"]; side_long = (pos["side"]=="LONG")
     close = float(df["close"].iloc[-1])
     atr   = indicators.get("atr", 0.0)
 
-    # خطة TP مرنة
     tp_plan, strength = dynamic_tp_plan("BUY" if side_long else "SELL", indicators, council, flow)
 
-    # تنفيذ TPs: تحقق الهدف → اغلق جزء
     remaining = pos["qty"]
     executed = []
     for pct, q_pct in tp_plan:
@@ -512,13 +479,10 @@ def manage_open_trade(df, indicators, council, flow):
             remaining -= qty_close
             executed.append((pct, qty_close))
 
-    # Breakeven مبسّط: بعد +0.30% حرّس الربح
     be_trigger = 0.30/100.0
     if (side_long and close >= entry*(1+be_trigger)) or ((not side_long) and close <= entry*(1-be_trigger)):
-        # يمكن إضافة منطق ستوب افتراضي/إغلاق ذكي عند انعكاس واضح
-        pass
+        pass  # ممكن تضيف تحريك ستوب/إغلاق ذكي
 
-    # ATR Trail (ratchet) مبسّط: احمِ الربح عند انعكاس قوي مقابل اتجاهك
     trail_mult = 1.6
     adverse_move = (close <= entry - atr*trail_mult) if side_long else (close >= entry + atr*trail_mult)
     if adverse_move and remaining > FINAL_CHUNK_QTY:
@@ -530,16 +494,15 @@ def manage_open_trade(df, indicators, council, flow):
     log.info(f"🧭 Manage: strength={round(strength,2)} executed={executed} remaining≈{round(remaining,4)}")
 
 # ===========================
-#     MAIN TRADE LOOP
+# MAIN LOOP
 # ===========================
 def trade_loop():
+    markets = exchange.load_markets()  # نحتاج الحدود (minQty/step/precision)
     while True:
         try:
-            # Cooldown
             if time.time() < state["cooldown_until"]:
                 time.sleep(LOOP_SLEEP_SEC); continue
 
-            # بيانات
             ohlcv = fetch_ohlcv(SYMBOL, TIMEFRAME, LOOKBACK_BARS)
             df = to_df(ohlcv)
             indicators = compute_indicators(df)
@@ -553,10 +516,9 @@ def trade_loop():
                 log.info(f"⛔ Spread guard: {spread_bps:.2f} bps > {MAX_SPREAD_BPS}")
                 time.sleep(LOOP_SLEEP_SEC); continue
 
-            # Position snapshot
             state["position"] = fetch_position()
 
-            # حارس الانتظار بعد الإغلاق: إلزام انقلاب RF في الاتجاه المطلوب
+            # RF wait-after-close
             if state["wait_for_next_signal_side"]:
                 need = state["wait_for_next_signal_side"]
                 if (need=="BUY" and indicators["rf_sig"]<=0) or (need=="SELL" and indicators["rf_sig"]>=0):
@@ -565,27 +527,24 @@ def trade_loop():
                 else:
                     state["wait_for_next_signal_side"] = None
 
-            # قرار المجلس
             decision, council, min_conf = council_decision(df, indicators, flow, state)
 
-            # ENTRY_RF_ONLY gate (اختياري)
             if decision in ("BUY","SELL") and ENTRY_RF_ONLY:
                 if (decision=="BUY" and indicators["rf_sig"]<=0) or (decision=="SELL" and indicators["rf_sig"]>=0):
                     council["debug"]["decision_reasons"] = council["debug"].get("decision_reasons",[])+["entry-rf-only-block"]
                     decision = "WAIT"
 
-            # إدارة الصفقة لو فيه مركز مفتوح
+            # إدارة مركز مفتوح
             if state["position"]:
                 manage_open_trade(df, indicators, council, flow)
                 time.sleep(LOOP_SLEEP_SEC); continue
 
-            # دخول
+            # ===== ENTRY =====
             if decision in ("BUY","SELL"):
                 reason = ",".join(council["debug"].get("decision_reasons", []))
 
-                # حجم تقريبي (60% من الرصيد × ليفرج)
+                # --- Sizing: 60% من الرصيد × الرافعة + احترام minQty/step ---
                 balance = exchange.fetch_balance()
-                # مرونة لاختلاف هيكل الرصيد بين البورصات
                 usdt = 0.0
                 if "USDT" in balance:
                     usdt = float(balance["USDT"].get("free", balance["USDT"].get("total", 0.0)))
@@ -593,9 +552,21 @@ def trade_loop():
                     usdt = float(balance["free"]["USDT"])
                 else:
                     usdt = float(balance.get("total", {}).get("USDT", 50.0))
+
                 price = float(df["close"].iloc[-1])
-                notional = max(5.0, usdt * 0.60 * LEVERAGE)
-                qty = max(0.1, round(notional/price, 3))
+                notional = max(5.0, usdt * RISK_ALLOC * LEVERAGE)
+
+                m = markets.get(SYMBOL, {})
+                limits = (m.get("limits", {}) or {}).get("amount", {}) if m else {}
+                prec = (m.get("precision", {}) or {}).get("amount", None) if m else None
+                amt_min = float(limits.get("min") or 10.0)        # Bybit SUI ≈ 10
+                step = float(prec if prec not in (None, 0) else 0.001)
+
+                def _round_step(x, step):
+                    return round(x / step) * step
+
+                raw_qty = notional / price
+                qty = _round_step(max(amt_min, raw_qty), step)
 
                 if not DRY_RUN:
                     place_order(decision, qty)
@@ -603,12 +574,10 @@ def trade_loop():
                 state["position"] = {"side":"LONG" if decision=="BUY" else "SHORT", "qty": qty, "entry": price}
                 log.info(f"🎯 EXECUTE {decision} qty={qty} price≈{price} | min_conf={min_conf:.2f} | reasons={reason}")
 
-                # طلب انتظار انقلاب RF بعد الإغلاق
                 if WAIT_NEXT_SIGNAL:
                     state["last_close_side"] = decision
                     state["wait_for_next_signal_side"] = "SELL" if decision=="BUY" else "BUY"
 
-                # تبريد بسيط بعد الدخول
                 state["cooldown_until"] = time.time() + 2
 
             time.sleep(LOOP_SLEEP_SEC)
@@ -619,7 +588,7 @@ def trade_loop():
             time.sleep(LOOP_SLEEP_SEC)
 
 # ===========================
-#         FLASK API
+# FLASK
 # ===========================
 app = Flask(__name__)
 
@@ -666,13 +635,11 @@ def keepalive_loop():
         time.sleep(KEEPALIVE_INTERVAL)
 
 # ===========================
-#           MAIN
+# MAIN
 # ===========================
 if __name__ == "__main__":
     t = threading.Thread(target=trade_loop, daemon=True)
     t.start()
-
     if SELF_URL:
         threading.Thread(target=keepalive_loop, daemon=True).start()
-
     app.run(host="0.0.0.0", port=PORT)
