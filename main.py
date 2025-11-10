@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-SUI ULTRA PRO — Council + FVG + SMC(OB) + OrderBook Flow
+SUI ULTRA PRO — Smart Council + SMC/FVG + OrderBook Flow + Iceberg + Early-Ignition + Scale-In
 Exchange: Bybit/BingX (USDT Perp via CCXT)
 """
 
-import os, time, math, json, logging, traceback, statistics
+import os, time, json, logging, traceback, statistics
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
+from collections import deque
+from datetime import datetime
 
 import pandas as pd
 import numpy as np
@@ -47,43 +48,46 @@ EXECUTE_ORDERS = True
 DRY_RUN = False
 LOG_MEDIUM_PANEL = True
 
-BOT_VERSION = f"SUI ULTRA PRO v6.2 — {EXCHANGE_NAME.upper()}"
-print("🚀 BOOT:", BOT_VERSION, flush=True)
+BOT_VERSION = f"SUI ULTRA PRO — {EXCHANGE_NAME.upper()}"
 
 STATE_PATH = "./bot_state.json"
 RESUME_ON_RESTART = True
 
 # =================== SETTINGS ===================
-# Range Filter (لو احتجته لاحقًا)
-RF_PERIOD=18; RF_MULT=3.0; RF_HYST_BPS=6.0
-
-# Indicators
-RSI_LEN=14; ADX_LEN=14; ATR_LEN=14
-ICHIMOKU=(9,26,52); BB=(20,2); MACD=(12,26,9); STOCH=(14,3,3)
-
 # Profit Mgmt
 SCALP_TP_TARGETS=[0.55,0.90,1.20]
 SCALP_TP_FRACTIONS=[0.50,0.30,0.20]
 TREND_TP_TARGETS=[0.60,1.50,2.50,4.00]
 TREND_TP_FRACTIONS=[0.30,0.30,0.25,0.15]
-BREAKEVEN_AFTER=0.35   # %
-TRAIL_ACTIVATE_PCT=1.0 # %
+BREAKEVEN_AFTER=0.35
+TRAIL_ACTIVATE_PCT=1.0
 ATR_TRAIL_MULT=1.8
 
-# Council
-TREND_STRENGTH_THRESHOLD=25
-VOLUME_CONFIRMATION_THRESHOLD=1.2
+# Council thresholds
 REQUIRED_CONFIRMATIONS=4
-GOLDEN_ENTRY_SCORE=7.0
+TREND_STRENGTH_ADX=25
+VOLUME_CONFIRMATION=1.2
 GOLDEN_ENTRY_ADX=22.0
 
 # Spread Gate (bps = 0.01%)
-MAX_SPREAD_BPS=float(os.getenv("MAX_SPREAD_BPS", "8"))   # 8bps=0.08%
+MAX_SPREAD_BPS=float(os.getenv("MAX_SPREAD_BPS", "8"))
 
-# FVG/SMC/Flow
+# Indicators core
+RSI_LEN=14; ADX_LEN=14; ATR_LEN=14
+ICHIMOKU=(9,26,52); BB=(20,2)
+
+# FVG / OB / FLOW / ICEBERG
 FVG_LOOKBACK=60; FVG_MIN_SIZE=0.0015; FVG_NEAR_PCT=0.15
 OB_LOOKBACK=80; OB_MIN_DISP=1.0; OB_NEAR_PCT=0.20
 ORDERBOOK_LIMIT=50; IMBALANCE_THRESH=0.20; WALL_X_SIGMA=2.2
+ICEBERG_WINDOW=6; ICEBERG_LEVELS=5; ICEBERG_REFILL_RATIO=0.60
+ICEBERG_TRADE_NEAR_PCT=0.08; ICEBERG_MIN_TICKS=2
+
+# Early ignition / Scale-in
+PROBE_SIZE = 0.35   # 35% من حجم الصفقة
+SCALE_IN_ADD = 0.30 # 30% تعزيز
+SCALE_IN_MAX = 2    # أقصى عدد تعزيزات
+PULLBACK_FOR_ADD = 0.30  # %0.30 تراجع مقبول للتعزيز
 
 # =================== EXCHANGE ===================
 def make_ex():
@@ -107,12 +111,12 @@ def load_market_specs():
 def exchange_specific_params(side, is_close=False):
     if EXCHANGE_NAME=="bybit":
         if POSITION_MODE=="hedge":
-            return {"positionSide":"Long" if side=="buy" else "Short","reduceOnly":is_close}
-        return {"positionSide":"Both","reduceOnly":is_close}
+            return {"positionSide": "Long" if side=="buy" else "Short", "reduceOnly": is_close}
+        return {"positionSide": "Both", "reduceOnly": is_close}
     else:
         if POSITION_MODE=="hedge":
-            return {"positionSide":"LONG" if side=="buy" else "SHORT","reduceOnly":is_close}
-        return {"positionSide":"BOTH","reduceOnly":is_close}
+            return {"positionSide": "LONG" if side=="buy" else "SHORT", "reduceOnly": is_close}
+        return {"positionSide": "BOTH", "reduceOnly": is_close}
 
 def exchange_set_leverage(exchange, lv, symbol):
     try:
@@ -129,15 +133,14 @@ except Exception as e:
     log_w(f"exchange init: {e}")
 
 # =================== STATE ===================
-STATE = {"open":False,"side":None,"entry":None,"qty":0.0,"pnl":0.0,
-         "bars":0,"trail":None,"breakeven":None,"tp_levels_hit":[],
-         "highest_profit_pct":0.0,"profit_targets_achieved":0,"mode":None}
+STATE = {"open":False,"side":None,"entry":None,"qty":0.0,"pnl":0.0,"bars":0,
+         "trail":None,"breakeven":None,"tp_levels_hit":[],"profit_targets_achieved":0,
+         "highest_profit_pct":0.0,"mode":None,"adds":0}
 
 def save_state(st:dict):
     try:
         st["ts"]=int(time.time()); st["compound_pnl"]=round(float(compound_pnl),6)
         with open(STATE_PATH,"w",encoding="utf-8") as f: json.dump(st,f,ensure_ascii=False,indent=2)
-        log_i(f"state saved (compound_pnl={compound_pnl:.4f})")
     except Exception as e:
         log_w(f"state save failed: {e}")
 
@@ -201,7 +204,6 @@ def fetch_multi_timeframe(tfs=("5m","15m","1h")):
             rows=ex.fetch_ohlcv(SYMBOL, timeframe=tf, limit=100, params={"type":"swap"})
             mtf[tf]=pd.DataFrame(rows, columns=["time","open","high","low","close","volume"])
         except Exception as e: log_w(f"fetch {tf}: {e}")
-    # aggregate quick view
     sigs={}; strengths={}
     for tf,df in mtf.items():
         if len(df)<50: continue
@@ -226,12 +228,12 @@ def spread_bps():
         return (ask-bid)/((ask+bid)/2)*10000.0
     except Exception: return 0.0
 
-# =================== INDICATORS ===================
+# =================== INDICATORS / MODULES ===================
 def wilder_ema(s:pd.Series,n:int): return s.ewm(alpha=1/n, adjust=False).mean()
 
 def compute_indicators(df:pd.DataFrame):
-    if len(df)<max(ATR_LEN,RSI_LEN,ADX_LEN)+2:
-        return {"rsi":50.0,"plus_di":0.0,"minus_di":0.0,"dx":0.0,"adx":0.0,"atr":0.0}
+    if len(df)<60:
+        return {"rsi":50.0,"plus_di":0.0,"minus_di":0.0,"adx":0.0,"atr":0.0}
     c,h,l=df["close"].astype(float), df["high"].astype(float), df["low"].astype(float)
     tr=pd.concat([(h-l).abs(), (h-c.shift(1)).abs(), (l-c.shift(1)).abs()], axis=1).max(axis=1)
     atr=wilder_ema(tr, ATR_LEN)
@@ -245,33 +247,31 @@ def compute_indicators(df:pd.DataFrame):
     minus_di=100*(wilder_ema(minus_dm, ADX_LEN)/atr.replace(0,1e-12))
     dx=(100*(plus_di-minus_di).abs()/(plus_di+minus_di).replace(0,1e-12)).fillna(0.0)
     adx=wilder_ema(dx, ADX_LEN)
-    i=len(df)-1
-    return {"rsi":float(rsi.iloc[i]),"plus_di":float(plus_di.iloc[i]),
-            "minus_di":float(minus_di.iloc[i]),"dx":float(dx.iloc[i]),
-            "adx":float(adx.iloc[i]),"atr":float(atr.iloc[i])}
+    return {"rsi":float(rsi.iloc[-1]),"plus_di":float(plus_di.iloc[-1]),
+            "minus_di":float(minus_di.iloc[-1]),"adx":float(adx.iloc[-1]),"atr":float(atr.iloc[-1])}
 
 def rsi_ma_context(df:pd.DataFrame):
     RSI_MA=9; NEUT=(45,55); PERSIST=3
-    if len(df)<max(RSI_MA,14): return {"rsi":50,"rsi_ma":50,"cross":"none","trendZ":"none","in_chop":True}
-    c=df["close"].astype(float); delta=c.diff(); up=delta.clip(lower=0); dn=(-delta).clip(lower=0)
-    ru=up.ewm(span=14, adjust=False).mean(); rd=dn.ewm(span=14, adjust=False).mean()
-    rsi=100-(100/(1+(ru/rd.replace(0,1e-12)))); rsi_ma=rsi.rolling(RSI_MA, min_periods=1).mean()
+    if len(df)<30: return {"rsi":50,"rsi_ma":50,"cross":"none","trendZ":"none","in_chop":True}
+    c=df["close"].astype(float); delta=c.diff(); gain=delta.clip(lower=0).ewm(span=14).mean()
+    loss=(-delta.clip(upper=0)).abs().ewm(span=14).mean(); rs=gain/loss.replace(0,1e-12)
+    rsi=100-(100/(1+rs)); rsi_ma=rsi.rolling(RSI_MA, min_periods=1).mean()
     cross="none"
-    if len(rsi)>=2:
-        if (rsi.iloc[-2]<=rsi_ma.iloc[-2]) and (rsi.iloc[-1]>rsi_ma.iloc[-1]): cross="bull"
-        elif (rsi.iloc[-2]>=rsi_ma.iloc[-2]) and (rsi.iloc[-1]<rsi_ma.iloc[-1]): cross="bear"
-    above=(rsi>rsi_ma); below=(rsi<rsi_ma)
-    persist_b=above.tail(PERSIST).all() if len(above)>=PERSIST else False
-    persist_s=below.tail(PERSIST).all() if len(below)>=PERSIST else False
+    if (rsi.iloc[-2]<=rsi_ma.iloc[-2]) and (rsi.iloc[-1]>rsi_ma.iloc[-1]): cross="bull"
+    elif (rsi.iloc[-2]>=rsi_ma.iloc[-2]) and (rsi.iloc[-1]<rsi_ma.iloc[-1]): cross="bear"
+    persist_b=(rsi.tail(PERSIST)>rsi_ma.tail(PERSIST)).all()
+    persist_s=(rsi.tail(PERSIST)<rsi_ma.tail(PERSIST)).all()
     cur=float(rsi.iloc[-1]); in_chop = NEUT[0]<=cur<=NEUT[1]
-    return {"rsi":cur,"rsi_ma":float(rsi_ma.iloc[-1]),"cross":cross,"trendZ":"bull" if persist_b else ("bear" if persist_s else "none"),"in_chop":in_chop}
+    return {"rsi":cur,"rsi_ma":float(rsi_ma.iloc[-1]),
+            "cross":cross,"trendZ":"bull" if persist_b else ("bear" if persist_s else "none"),
+            "in_chop":in_chop}
 
 def super_trend(df, period=10, multiplier=3):
     try:
-        h=df['high'].astype(float); l=df['low'].astype(float); c=df['close'].astype(float)
+        h,l,c=df['high'].astype(float),df['low'].astype(float),df['close'].astype(float)
         tr=pd.concat([(h-l),(h-c.shift(1)).abs(),(l-c.shift(1)).abs()],axis=1).max(axis=1)
-        atr=tr.ewm(span=period, adjust=False).mean()
-        hl2=(h+l)/2; ub=hl2+(multiplier*atr); lb=hl2-(multiplier*atr)
+        atr=tr.ewm(span=period).mean(); hl2=(h+l)/2
+        ub=hl2+(multiplier*atr); lb=hl2-(multiplier*atr)
         st=[ub.iloc[0]]; trend=[-1]
         for i in range(1,len(df)):
             if (st[i-1]==ub.iloc[i-1] and c.iloc[i] <= ub.iloc[i]) or (st[i-1]==lb.iloc[i-1] and c.iloc[i] < lb.iloc[i]):
@@ -280,7 +280,7 @@ def super_trend(df, period=10, multiplier=3):
                 st.append(lb.iloc[i]); trend.append(1)
         strength=abs(c.iloc[-1]-st[-1])/max(atr.iloc[-1],1e-9)
         sig="buy" if trend[-1]>0 else "sell"
-        return {"trend":trend[-1],"strength":strength,"value":st[-1],"signal":sig}
+        return {"trend":trend[-1],"strength":float(strength),"value":float(st[-1]),"signal":sig}
     except Exception: return {"trend":0,"strength":0,"value":0,"signal":"neutral"}
 
 def ichimoku_cloud(df, tenkan=9,kijun=26,senkou=52):
@@ -292,9 +292,7 @@ def ichimoku_cloud(df, tenkan=9,kijun=26,senkou=52):
         price=c.iloc[-1]; above=price>max(sA.iloc[-1],sB.iloc[-1]); below=price<min(sA.iloc[-1],sB.iloc[-1])
         tk_bull=ten.iloc[-1]>kij.iloc[-1]; price_abv_kij=price>kij.iloc[-1]
         sig="buy" if (above and tk_bull and price_abv_kij) else ("sell" if (below and (not tk_bull) and (not price_abv_kij)) else "neutral")
-        return {"tenkan":float(ten.iloc[-1]),"kijun":float(kij.iloc[-1]),"senkou_a":float(sA.iloc[-1]),"senkou_b":float(sB.iloc[-1]),
-                "above_cloud":above,"below_cloud":below,"cloud_green":sA.iloc[-1]>sB.iloc[-1],"signal":sig,
-                "strength":abs(price-kij.iloc[-1])/max(price,1e-9)*100}
+        return {"signal":sig,"strength":abs(price-kij.iloc[-1])/max(price,1e-9)*100}
     except Exception: return {"signal":"neutral","strength":0}
 
 def bollinger_bands_advanced(df, period=20, std=2):
@@ -304,9 +302,7 @@ def bollinger_bands_advanced(df, period=20, std=2):
         bw=((ub-lb)/sma.replace(0,1e-12)*100).iloc[-1]; pctB=(cur-lb.iloc[-1])/max(ub.iloc[-1]-lb.iloc[-1],1e-12)
         squeeze=bw<10
         sig="buy" if (cur<=lb.iloc[-1] and not squeeze) else ("sell" if (cur>=ub.iloc[-1] and not squeeze) else "neutral")
-        return {"upper":float(ub.iloc[-1]),"middle":float(sma.iloc[-1]),"lower":float(lb.iloc[-1]),
-                "bandwidth":float(bw),"percent_b":float(pctB),"squeeze":bool(squeeze),"signal":sig,
-                "strength":abs(pctB-0.5)*2}
+        return {"percent_b":float(pctB),"squeeze":bool(squeeze),"signal":sig,"strength":abs(pctB-0.5)*2}
     except Exception: return {"signal":"neutral","strength":0}
 
 def volume_weighted_macd(df, fast=12, slow=26, signal=9):
@@ -319,8 +315,7 @@ def volume_weighted_macd(df, fast=12, slow=26, signal=9):
         bear=(macd.iloc[-1]<macd_sig.iloc[-1]) and (hist.iloc[-1]<hist.iloc[-2])
         sig="buy" if bull else ("sell" if bear else "neutral")
         strength=abs(hist.iloc[-1])/max(c.rolling(50).std().iloc[-1],1e-12)
-        return {"macd":float(macd.iloc[-1]),"signal_line":float(macd_sig.iloc[-1]),
-                "histogram":float(hist.iloc[-1]),"signal":sig,"strength":float(strength)}
+        return {"histogram":float(hist.iloc[-1]),"signal":sig,"strength":float(strength)}
     except Exception: return {"signal":"neutral","strength":0}
 
 def stochastic_rsi_advanced(df, rsi_length=14, stoch_length=14, k=3, d=3):
@@ -340,12 +335,10 @@ def market_structure_break_advanced(df, lookback=50):
         h=df['high'].astype(float); l=df['low'].astype(float); c=df['close'].astype(float); v=df['volume'].astype(float)
         prev_h=h.tail(lookback+10).head(lookback).max(); prev_l=l.tail(lookback+10).head(lookback).min()
         cur=c.iloc[-1]; vol=v.iloc[-1]; avg=v.tail(lookback).mean()
-        break_high=cur>prev_h; break_low=cur<prev_l; vol_ok=vol>avg*VOLUME_CONFIRMATION_THRESHOLD
-        if break_high and vol_ok: return {"signal":"strong_buy","strength":(cur-prev_h)/max(prev_h,1e-9)*100,
-                                          "break_high":True,"break_low":False,"volume_confirmation":True}
-        if break_low and vol_ok:  return {"signal":"strong_sell","strength":(prev_l-cur)/max(prev_l,1e-9)*100,
-                                          "break_high":False,"break_low":True,"volume_confirmation":True}
-        return {"signal":"neutral","strength":0,"break_high":False,"break_low":False,"volume_confirmation":False}
+        break_high=cur>prev_h; break_low=cur<prev_l; vol_ok=vol>avg*VOLUME_CONFIRMATION
+        if break_high and vol_ok: return {"signal":"strong_buy","strength":(cur-prev_h)/max(prev_h,1e-9)*100}
+        if break_low and vol_ok:  return {"signal":"strong_sell","strength":(prev_l-cur)/max(prev_l,1e-9)*100}
+        return {"signal":"neutral","strength":0}
     except Exception: return {"signal":"neutral","strength":0}
 
 def smart_money_flow(df, period=20):
@@ -354,12 +347,13 @@ def smart_money_flow(df, period=20):
         mfm=((c-l)-(h-c))/ (h-l).replace(0,1e-12); mfv=mfm*v
         pos=mfv.where(mfv>0,0).rolling(period).sum(); neg=abs(mfv.where(mfv<0,0)).rolling(period).sum()
         mfi=100-(100/(1+pos/ neg.replace(0,1e-12)))
-        adl=(((c-l)-(h-c))/ (h-l).replace(0,1e-12)*v).cumsum(); trend="rising" if adl.iloc[-1]>adl.iloc[-2] else "falling"
-        return {"mfi":float(mfi.iloc[-1]),"smart_money_bullish":trend=="rising" and mfi.iloc[-1]<30,
-                "smart_money_bearish":trend=="falling" and mfi.iloc[-1]>70,"strength":abs(mfi.iloc[-1]-50)/50}
+        return {"mfi":float(mfi.iloc[-1]),
+                "smart_money_bullish": mfi.iloc[-1]<30,
+                "smart_money_bearish": mfi.iloc[-1]>70,
+                "strength":abs(mfi.iloc[-1]-50)/50}
     except Exception: return {"mfi":50,"smart_money_bullish":False,"smart_money_bearish":False,"strength":0}
 
-# -------- FVG / OB / FLOW --------
+# FVG / OB / FLOW / ICEBERG
 def detect_fvg(df, lookback=FVG_LOOKBACK, min_size=FVG_MIN_SIZE):
     try:
         if len(df)<10: return {"has":False}
@@ -420,6 +414,64 @@ def fetch_orderbook_metrics():
         return {"signal":sig,"imbalance":float(imb),"bid_wall":float(bid_wall),"ask_wall":float(ask_wall)}
     except Exception: return {"signal":"neutral","imbalance":0.0,"bid_wall":0.0,"ask_wall":0.0}
 
+# Iceberg buffers
+OB_SNAPSHOTS = deque(maxlen=ICEBERG_WINDOW)
+TRADES_BUF   = deque(maxlen=300)
+
+def update_orderflow_buffers():
+    try:
+        ob = ex.fetch_order_book(SYMBOL, limit=max(10, ICEBERG_LEVELS))
+        OB_SNAPSHOTS.append({
+            "ts": time.time(),
+            "bids": ob.get("bids", [])[:ICEBERG_LEVELS],
+            "asks": ob.get("asks", [])[:ICEBERG_LEVELS],
+        })
+    except Exception as e:
+        log_w(f"orderbook snap fail: {e}")
+    try:
+        trades = ex.fetch_trades(SYMBOL, limit=100)
+        now = time.time()
+        for t in trades or []:
+            TRADES_BUF.append({
+                "ts": t.get("timestamp", 0)/1000 if t.get("timestamp") else now,
+                "price": float(t.get("price", 0) or 0),
+                "amount": float(t.get("amount", 0) or 0),
+                "side": t.get("side", None)
+            })
+        while TRADES_BUF and (now - TRADES_BUF[0]["ts"] > 300):
+            TRADES_BUF.popleft()
+    except Exception as e:
+        log_w(f"fetch_trades fail: {e}")
+
+def detect_iceberg():
+    if len(OB_SNAPSHOTS) < max(3, ICEBERG_MIN_TICKS):
+        return {"has": False}
+    bids_series = list(zip(*[snap["bids"] for snap in OB_SNAPSHOTS if snap["bids"]]))
+    asks_series = list(zip(*[snap["asks"] for snap in OB_SNAPSHOTS if snap["asks"]]))
+    def level_stats(series, side):
+        out=[]
+        for lvl_snaps in series[:ICEBERG_LEVELS]:
+            prices=[s[0] for s in lvl_snaps]; qtys=[s[1] for s in lvl_snaps]
+            if not prices or not qtys: continue
+            px_now=prices[-1]; q_now=qtys[-1]; q_max=max(qtys); q_min=min(qtys)
+            near_th = px_now * ICEBERG_TRADE_NEAR_PCT / 100.0
+            vol_near=sum(t["amount"] for t in TRADES_BUF if abs(t["price"]-px_now)<=near_th)
+            refilled = (q_now >= q_max*ICEBERG_REFILL_RATIO) and (q_max > q_min*1.05)
+            out.append({"px":px_now,"q_now":q_now,"q_max":q_max,"vol_near":vol_near,"refilled":refilled})
+        return out
+    def best(stats):
+        cand=[ (s["vol_near"] / max(s["q_max"],1e-9), s) for s in stats if s["refilled"] ]
+        return max(cand, default=(0.0, None), key=lambda x: x[0])
+    z_bid,s_bid = best(level_stats(bids_series,"bid"))
+    z_ask,s_ask = best(level_stats(asks_series,"ask"))
+    strong_bid = s_bid is not None and z_bid >= 0.35 and len(OB_SNAPSHOTS) >= ICEBERG_MIN_TICKS
+    strong_ask = s_ask is not None and z_ask >= 0.35 and len(OB_SNAPSHOTS) >= ICEBERG_MIN_TICKS
+    if strong_bid and (not strong_ask or z_bid>=z_ask):
+        return {"has":True,"side":"bid","price":s_bid["px"],"strength":float(min(z_bid*3,3.0))}
+    if strong_ask:
+        return {"has":True,"side":"ask","price":s_ask["px"],"strength":float(min(z_ask*3,3.0))}
+    return {"has":False}
+
 # =================== COUNCIL ===================
 def ultra_intelligent_council(df, mtf_meta=None):
     try:
@@ -428,57 +480,46 @@ def ultra_intelligent_council(df, mtf_meta=None):
         structure = market_structure_break_advanced(df); money = smart_money_flow(df)
         ind_basic = compute_indicators(df); rsi_ctx = rsi_ma_context(df)
         fvg = detect_fvg(df); obx = detect_order_blocks(df); flow = fetch_orderbook_metrics()
+        iceberg = detect_iceberg()
 
         votes_b=votes_s=0; score_b=score_s=0.0; logs=[]; confirms=[]
 
-        # SuperTrend
-        if st["signal"]=="buy": votes_b+=2; score_b+=st["strength"]*2; logs.append(f"🚀 ST buy ({st['strength']:.2f})"); confirms.append("SuperTrend")
-        if st["signal"]=="sell": votes_s+=2; score_s+=st["strength"]*2; logs.append(f"💥 ST sell ({st['strength']:.2f})"); confirms.append("SuperTrend")
-        # Ichi
-        if ichi["signal"]=="buy": votes_b+=2; score_b+=ichi["strength"]*1.5; logs.append(f"☁️ Ichi + ({ichi['strength']:.2f}%)"); confirms.append("Ichimoku")
-        if ichi["signal"]=="sell": votes_s+=2; score_s+=ichi["strength"]*1.5; logs.append(f"☁️ Ichi - ({ichi['strength']:.2f}%)"); confirms.append("Ichimoku")
-        # BB
-        if bb["signal"]=="buy" and not bb["squeeze"]: votes_b+=2; score_b+=bb["strength"]*2; logs.append("📊 BB buy from lower"); confirms.append("Bollinger")
-        if bb["signal"]=="sell" and not bb["squeeze"]: votes_s+=2; score_s+=bb["strength"]*2; logs.append("📊 BB sell from upper"); confirms.append("Bollinger")
-        # MACD
-        if macd["signal"]=="buy": votes_b+=2; score_b+=macd["strength"]*1.5; logs.append("📈 MACD bull"); confirms.append("MACD")
-        if macd["signal"]=="sell": votes_s+=2; score_s+=macd["strength"]*1.5; logs.append("📉 MACD bear"); confirms.append("MACD")
-        # StochRSI
-        if stoch["signal"]=="buy": votes_b+=1; score_b+=stoch["strength"]*1.2; logs.append("🎯 StochRSI bull"); confirms.append("StochRSI")
-        if stoch["signal"]=="sell": votes_s+=1; score_s+=stoch["strength"]*1.2; logs.append("🎯 StochRSI bear"); confirms.append("StochRSI")
-        # Structure
-        if structure["signal"]=="strong_buy": votes_b+=3; score_b+=structure["strength"]*0.5; logs.append(f"🔄 Break↑ {structure['strength']:.2f}%"); confirms.append("Structure")
-        if structure["signal"]=="strong_sell": votes_s+=3; score_s+=structure["strength"]*0.5; logs.append(f"🔄 Break↓ {structure['strength']:.2f}%"); confirms.append("Structure")
-        # Smart Money
+        def add(sig, buy_pts, sell_pts, text):
+            nonlocal votes_b, votes_s, score_b, score_s, logs, confirms
+            if sig=="buy": votes_b+=buy_pts[0]; score_b+=buy_pts[1]; logs.append(text); confirms.append(text.split()[0])
+            elif sig=="sell": votes_s+=sell_pts[0]; score_s+=sell_pts[1]; logs.append(text); confirms.append(text.split()[0])
+
+        add(st["signal"], (2, st["strength"]*2), (2, st["strength"]*2), f"🚀 ST {st['signal']}({st['strength']:.2f})")
+        add(ichi["signal"], (2, ichi["strength"]*1.5), (2, ichi["strength"]*1.5), f"☁️ Ichi {ichi['signal']}({ichi['strength']:.2f})")
+        if bb["signal"]!="neutral" and not bb["squeeze"]:
+            add(bb["signal"], (2, bb["strength"]*2), (2, bb["strength"]*2), f"📊 BB {bb['signal']}")
+        add(macd["signal"], (2, macd["strength"]*1.5), (2, macd["strength"]*1.5), f"📈 MACD {macd['signal']}")
+        add(stoch["signal"], (1, stoch["strength"]*1.2), (1, stoch["strength"]*1.2), f"🎯 Stoch {stoch['signal']}")
+        if structure["signal"]=="strong_buy": votes_b+=3; score_b+=structure["strength"]*0.5; logs.append(f"🔄 Break↑ {structure['strength']:.2f}"); confirms.append("Structure")
+        if structure["signal"]=="strong_sell": votes_s+=3; score_s+=structure["strength"]*0.5; logs.append(f"🔄 Break↓ {structure['strength']:.2f}"); confirms.append("Structure")
         if money["smart_money_bullish"]: votes_b+=2; score_b+=money["strength"]*1.8; logs.append("💰 SmartMoney buy"); confirms.append("SmartMoney")
         if money["smart_money_bearish"]: votes_s+=2; score_s+=money["strength"]*1.8; logs.append("💰 SmartMoney sell"); confirms.append("SmartMoney")
-        # MTF meta
+
         if mtf_meta:
-            if mtf_meta["overall_signal"]=="bullish": votes_b+=2; score_b+=mtf_meta["confidence"]*2; logs.append(f"⏰ MTF bull ({mtf_meta['bull_count']})"); confirms.append("MultiTF")
-            if mtf_meta["overall_signal"]=="bearish": votes_s+=2; score_s+=mtf_meta["confidence"]*2; logs.append(f"⏰ MTF bear ({mtf_meta['bear_count']})"); confirms.append("MultiTF")
-        # Trend boost
-        if ind_basic["adx"]>TREND_STRENGTH_THRESHOLD:
+            if mtf_meta["overall_signal"]=="bullish": votes_b+=2; score_b+=mtf_meta["confidence"]*2; logs.append(f"⏰ MTF bull({mtf_meta['bull_count']})"); confirms.append("MultiTF")
+            if mtf_meta["overall_signal"]=="bearish": votes_s+=2; score_s+=mtf_meta["confidence"]*2; logs.append(f"⏰ MTF bear({mtf_meta['bear_count']})"); confirms.append("MultiTF")
+
+        if ind_basic["adx"]>TREND_STRENGTH_ADX:
             if votes_b>votes_s: score_b*=1.3; logs.append(f"🔥 Trend+ ADX={ind_basic['adx']:.1f}")
             elif votes_s>votes_b: score_s*=1.3; logs.append(f"🔥 Trend- ADX={ind_basic['adx']:.1f}")
-        # Volume boost
-        v=df['volume'].astype(float); cur_v=float(v.iloc[-1]); avg=v.tail(20).mean()
-        if cur_v>avg*VOLUME_CONFIRMATION_THRESHOLD:
-            if votes_b>votes_s: score_b*=1.2; logs.append("📈 Volume↑ supports BUY")
-            elif votes_s>votes_b: score_s*=1.2; logs.append("📉 Volume↑ supports SELL")
-        # FVG
+
+        # FVG/OB/Flow/Iceberg
         if fvg.get("has"):
-            if fvg["type"]=="bull": votes_b+=2; score_b+=1.0+(0.5 if fvg.get("near") else 0); logs.append(f"🧩 FVG bull (near={fvg.get('near')})"); confirms.append("FVG")
-            if fvg["type"]=="bear": votes_s+=2; score_s+=1.0+(0.5 if fvg.get("near") else 0); logs.append(f"🧩 FVG bear (near={fvg.get('near')})"); confirms.append("FVG")
-        # OB
+            if fvg["type"]=="bull": votes_b+=2; score_b+=1.0+(0.5 if fvg.get("near") else 0); logs.append("🧩 FVG bull"); confirms.append("FVG")
+            if fvg["type"]=="bear": votes_s+=2; score_s+=1.0+(0.5 if fvg.get("near") else 0); logs.append("🧩 FVG bear"); confirms.append("FVG")
         if obx.get("has"):
-            if obx["type"]=="bull": votes_b+=3; score_b+=1.8 if obx.get("near") else 1.0; logs.append(f"🏦 OB bull (near={obx.get('near')})"); confirms.append("OrderBlock")
-            if obx["type"]=="bear": votes_s+=3; score_s+=1.8 if obx.get("near") else 1.0; logs.append(f"🏦 OB bear (near={obx.get('near')})"); confirms.append("OrderBlock")
-        # FLOW
+            if obx["type"]=="bull": votes_b+=3; score_b+=1.8 if obx.get("near") else 1.0; logs.append("🏦 OB bull"); confirms.append("OrderBlock")
+            if obx["type"]=="bear": votes_s+=3; score_s+=1.8 if obx.get("near") else 1.0; logs.append("🏦 OB bear"); confirms.append("OrderBlock")
         if flow.get("signal")=="buy": votes_b+=2; score_b+=1.2+abs(flow["imbalance"]); logs.append(f"📊 FLOW buy imb={flow['imbalance']:.2f}"); confirms.append("Flow")
         if flow.get("signal")=="sell": votes_s+=2; score_s+=1.2+abs(flow["imbalance"]); logs.append(f"📊 FLOW sell imb={flow['imbalance']:.2f}"); confirms.append("Flow")
-
-        # Golden Zone gate (اختياري: اشتراط ADX)
-        if ind_basic["adx"]<GOLDEN_ENTRY_ADX: pass
+        if iceberg.get("has"):
+            if iceberg["side"]=="bid": votes_b+=2; score_b+=1.2+iceberg["strength"]; logs.append(f"🧊 ICEBERG bid({iceberg['strength']:.2f})"); confirms.append("Iceberg")
+            else: votes_s+=2; score_s+=1.2+iceberg["strength"]; logs.append(f"🧊 ICEBERG ask({iceberg['strength']:.2f})"); confirms.append("Iceberg")
 
         return {
             "votes_buy":votes_b,"votes_sell":votes_s,
@@ -487,14 +528,14 @@ def ultra_intelligent_council(df, mtf_meta=None):
             "indicators":{
                 "super_trend":st,"ichimoku":ichi,"bollinger":bb,"macd":macd,"stoch_rsi":stoch,
                 "market_structure":structure,"money_flow":money,"basic":ind_basic,"rsi_context":rsi_ctx,
-                "fvg":fvg,"order_block":obx,"orderbook_flow":flow
+                "fvg":fvg,"order_block":obx,"orderbook_flow":flow,"iceberg":iceberg
             },
             "mtf_analysis":mtf_meta
         }
     except Exception as e:
         log_w(f"council error: {e}")
         return {"votes_buy":0,"votes_sell":0,"score_buy":0,"score_sell":0,
-                "logs":[],"confirmation_signals":[],"indicators":{},"mtf_analysis":None}
+                "logs":[],"confirmation_signals":[], "indicators":{},"mtf_analysis":None}
 
 # =================== LOG MEDIUM PANEL ===================
 def render_medium_log(c):
@@ -503,14 +544,14 @@ def render_medium_log(c):
         st=ind.get("super_trend",{}); ich=ind.get("ichimoku",{}); bb=ind.get("bollinger",{})
         macd=ind.get("macd",{}); stoch=ind.get("stoch_rsi",{}); mstr=ind.get("market_structure",{})
         money=ind.get("money_flow",{}); mtf=c.get("mtf_analysis",{}) or {}
-        fvg=ind.get("fvg",{}); obx=ind.get("order_block",{}); flow=ind.get("orderbook_flow",{})
+        fvg=ind.get("fvg",{}); obx=ind.get("order_block",{}); flow=ind.get("orderbook_flow",{}); ice=ind.get("iceberg",{})
 
         bal=balance_usdt(); bal_fmt=f"{bal:.2f}" if (bal is not None) else "N/A"
         print(f"💼 BALANCE: {bal_fmt} USDT | 📦 COMPOUND PNL: {compound_pnl:+.4f} USDT", flush=True)
 
         if STATE.get("open"):
             entry=STATE.get("entry"); entry_fmt=f"{entry:.6f}" if isinstance(entry,(int,float)) else str(entry)
-            print(f"🧭 MODE={STATE.get('mode','-').upper()} | POS={STATE.get('side','-').upper()} | PnL={STATE.get('pnl',0.0):.2f}% | TP_hits={int(STATE.get('profit_targets_achieved',0))} | entry={entry_fmt}", flush=True)
+            print(f"🧭 MODE={STATE.get('mode','-').upper()} | POS={STATE.get('side','-').upper()} | PnL={STATE.get('pnl',0.0):.2f}% | TP_hits={int(STATE.get('profit_targets_achieved',0))} | entry={entry_fmt} | adds={STATE.get('adds',0)}", flush=True)
         else:
             print(f"⚪ NO OPEN POSITIONS | Waiting: {wait_for_next_signal_side}", flush=True)
 
@@ -522,57 +563,47 @@ def render_medium_log(c):
         print(f"🟢 ST={st.get('signal','-')}({st.get('strength',0):.2f}) | ☁️ Ichi={ich.get('signal','-')}({ich.get('strength',0):.2f}) | 🎯 MTF={mtf.get('overall_signal','-')}({mtf.get('bull_count',0)}/{mtf.get('bear_count',0)})", flush=True)
         print(f"📈 MACD={macd.get('signal','-')}(hist={macd.get('histogram',0):.4f}) | 🔁 Stoch={stoch.get('signal','-')}(K={stoch.get('k',0):.1f}/D={stoch.get('d',0):.1f})", flush=True)
         print(f"📎 BB={bb.get('signal','-')}(%B={bb.get('percent_b',0):.2f}, sq={bool(bb.get('squeeze',False))}) | 🧱 Struct={mstr.get('signal','-')}({mstr.get('strength',0):.2f}%)", flush=True)
+        flow_txt=f"{flow.get('signal','-')}(imb={float(flow.get('imbalance',0)):.2f},Wb={float(flow.get('bid_wall',0)):.1f}/Wa={float(flow.get('ask_wall',0)):.1f})"
         fvg_txt = f"{fvg.get('type','-')}{'~' if fvg.get('near') else ''}" if fvg.get("has") else "-"
         obx_txt = f"{obx.get('type','-')}{'~' if obx.get('near') else ''}" if obx.get("has") else "-"
-        flow_txt=f"{flow.get('signal','-')}(imb={float(flow.get('imbalance',0)):.2f},Wb={float(flow.get('bid_wall',0)):.1f}/Wa={float(flow.get('ask_wall',0)):.1f})"
         print(f"🧠 SMC: FVG={fvg_txt} | OB={obx_txt} | FLOW={flow_txt}", flush=True)
+        if ice and ice.get("has"):
+            print(f"🧊 Iceberg: side={ice.get('side')} @ {float(ice.get('price',0)):.4f} | str={float(ice.get('strength',0)):.2f}", flush=True)
         print("—"*70, flush=True)
     except Exception as e:
         log_w(f"render_medium_log error: {e}")
 
-# =================== ENTRY/EXIT ===================
+# =================== ENTRY/EXIT & MGMT ===================
 def setup_trade_management(mode):
     if mode=="scalp":
         return {"tp_targets":SCALP_TP_TARGETS,"tp_fractions":SCALP_TP_FRACTIONS,
                 "be_activate_pct":BREAKEVEN_AFTER/100.0,"trail_activate_pct":TRAIL_ACTIVATE_PCT/100.0,
-                "atr_trail_mult":ATR_TRAIL_MULT,"close_aggression":"high","max_tp_levels":len(SCALP_TP_TARGETS)}
+                "atr_trail_mult":ATR_TRAIL_MULT,"max_tp_levels":len(SCALP_TP_TARGETS)}
     return {"tp_targets":TREND_TP_TARGETS,"tp_fractions":TREND_TP_FRACTIONS,
             "be_activate_pct":BREAKEVEN_AFTER/100.0,"trail_activate_pct":TRAIL_ACTIVATE_PCT/100.0,
-            "atr_trail_mult":ATR_TRAIL_MULT,"close_aggression":"medium","max_tp_levels":len(TREND_TP_TARGETS)}
+            "atr_trail_mult":ATR_TRAIL_MULT,"max_tp_levels":len(TREND_TP_TARGETS)}
 
 def manage_take_profits(state,current_price,pnl_pct,mgmt,mode):
     if state["qty"]<=0: return
     tps=mgmt["tp_targets"]; frs=mgmt["tp_fractions"]
-    if mode=="scalp":
-        for i,(tp,frac) in enumerate(zip(tps,frs)):
-            if not state.get(f"tp{i+1}_done") and pnl_pct>=tp/100.0:
-                close_qty=safe_qty(state["qty"]*frac)
-                if close_qty>0:
+    hit=state.get("tp_levels_hit",[False]*len(tps))
+    for i,(tp,frac) in enumerate(zip(tps,frs)):
+        if (mode=="scalp" and state.get(f"tp{i+1}_done")) or (mode!="scalp" and hit[i]): 
+            continue
+        if pnl_pct >= tp:
+            close_qty=safe_qty(state["qty"]*frac)
+            if close_qty>0 and MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN:
+                try:
                     side="sell" if state["side"]=="long" else "buy"
-                    if MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN:
-                        try:
-                            params=exchange_specific_params(side, True)
-                            ex.create_order(SYMBOL,"market",side,close_qty,None,params)
-                            log_g(f"SCALP TP{i+1} hit ({tp}%)")
-                        except Exception as e: log_e(f"Scalp TP{i+1} failed: {e}")
-                    state["qty"]=safe_qty(state["qty"]-close_qty); state[f"tp{i+1}_done"]=True
-                    state["profit_targets_achieved"]+=1
-    else:
-        hit=state.get("tp_levels_hit",[False]*len(tps))
-        for i,(tp,frac) in enumerate(zip(tps,frs)):
-            if not hit[i] and pnl_pct>=tp/100.0:
-                close_qty=safe_qty(state["qty"]*frac)
-                if close_qty>0:
-                    side="sell" if state["side"]=="long" else "buy"
-                    if MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN:
-                        try:
-                            params=exchange_specific_params(side, True)
-                            ex.create_order(SYMBOL,"market",side,close_qty,None,params)
-                            log_g(f"TREND TP{i+1} hit ({tp}%)")
-                        except Exception as e: log_e(f"Trend TP{i+1} failed: {e}")
-                    state["qty"]=safe_qty(state["qty"]-close_qty); hit[i]=True
-                    state["profit_targets_achieved"]+=1
-        state["tp_levels_hit"]=hit
+                    params=exchange_specific_params(side, True)
+                    ex.create_order(SYMBOL,"market",side,close_qty,None,params)
+                except Exception as e: log_e(f"TP{i+1} failed: {e}")
+            state["qty"]=safe_qty(state["qty"]-close_qty)
+            if mode=="scalp": state[f"tp{i+1}_done"]=True
+            else: hit[i]=True
+            state["profit_targets_achieved"]+=1
+            log_g(f"TP{i+1} hit ({tp}%)")
+    state["tp_levels_hit"]=hit
 
 def smart_entry_system(council):
     confirms=len(council["confirmation_signals"])
@@ -585,7 +616,8 @@ def execute_trade_decision(side, price, qty, council):
     if not isinstance(qty,(int,float)) or qty<=0: log_e("qty invalid"); return False
     if price is None or price<=0: log_e("price invalid"); return False
     if side not in ["buy","sell"]: log_e(f"side invalid {side}"); return False
-    if not EXECUTE_ORDERS or DRY_RUN: log_i(f"DRY_RUN: {side} {qty:.4f} @ {price:.6f}"); return True
+    if not EXECUTE_ORDERS or DRY_RUN:
+        log_i(f"DRY_RUN: {side.upper()} {qty:.4f} @ {price:.6f}"); return True
     print(f"🎯 EXECUTE: {side.upper()} {qty:.4f} @ {price:.6f} | score {council['score_buy']:.1f}/{council['score_sell']:.1f} | conf {len(council['confirmation_signals'])}", flush=True)
     try:
         if MODE_LIVE:
@@ -604,8 +636,7 @@ def execute_trade_decision(side, price, qty, council):
                     return True
                 return False
         else:
-            log_g("SIMULATED EXECUTION")
-            return True
+            log_g("SIMULATED EXECUTION"); return True
     except Exception as e:
         log_e(f"EXECUTION FAILED: {e}"); return False
 
@@ -618,35 +649,55 @@ def open_market_ultra(side, qty, price, council):
         tp_hit=[False]*len(mgmt["tp_targets"])
         STATE.update({"open":True,"side":"long" if side=="buy" else "short","entry":price,"qty":qty,"pnl":0.0,
                       "bars":0,"trail":None,"breakeven":None,"tp_levels_hit":tp_hit,"highest_profit_pct":0.0,
-                      "profit_targets_achieved":0,"mode":mode,"management":mgmt,"council_snapshot":council})
-        save_state({"in_position":True,"side":STATE["side"].upper(),"entry_price":price,"position_qty":qty,
-                    "leverage":LEVERAGE,"mode":mode,"management":mgmt,"council_snapshot":council,
+                      "profit_targets_achieved":0,"mode":mode,"management":mgmt,"adds":0})
+        save_state({"in_position":True,"side":STATE["side"].upper(),"entry_price":price,
+                    "position_qty":qty,"leverage":LEVERAGE,"mode":mode,"management":mgmt,
                     "opened_at":int(time.time()),"tp_levels_hit":tp_hit})
-        log_g(f"POSITION OPENED: {side.upper()} | mode={mode} | strength={strength:.1f}")
+        log_g(f"POSITION OPENED: {side.upper()} | mode={mode} | strength={strength:.1f} | qty={qty}")
         return True
     return False
 
+def try_scale_in(df, council):
+    if not STATE.get("open") or STATE.get("mode")!="trend" or STATE.get("adds",0)>=SCALE_IN_MAX: 
+        return
+    px = price_now()
+    if not px: 
+        return
+    entry = STATE.get("entry")
+    pullback_ok = abs((px - entry)/entry)*100 <= PULLBACK_FOR_ADD
+    flow_sig = council.get("indicators",{}).get("orderbook_flow",{}).get("signal","neutral")
+    has_smc = council.get("indicators",{}).get("fvg",{}).get("has") or council.get("indicators",{}).get("order_block",{}).get("has")
+    if STATE["side"]=="long" and pullback_ok and flow_sig=="buy" and has_smc:
+        add = safe_qty(STATE["qty"] * SCALE_IN_ADD)
+        if add>0 and execute_trade_decision("buy", px, add, council):
+            STATE["qty"] += add; STATE["adds"] += 1; log_g("Scale-In +30% (LONG)")
+    if STATE["side"]=="short" and pullback_ok and flow_sig=="sell" and has_smc:
+        add = safe_qty(STATE["qty"] * SCALE_IN_ADD)
+        if add>0 and execute_trade_decision("sell", px, add, council):
+            STATE["qty"] += add; STATE["adds"] += 1; log_g("Scale-In +30% (SHORT)")
+
 def smart_exit_analysis(df, council, price, pnl_pct, side, entry):
-    # Council reversal
     cur = ultra_intelligent_council(df)
     cur_sig = "buy" if cur["score_buy"]>cur["score_sell"] else "sell"
     if (side=="long" and cur_sig=="sell") or (side=="short" and cur_sig=="buy"):
         return {"action":"close","reason":"council_reversal"}
-    # Profit cap
     if pnl_pct >= (8 if STATE.get("mode")=="trend" else 4):
         return {"action":"close","reason":"excellent_profit"}
-    # Momentum loss
     if council["indicators"]["basic"]["adx"]<15 and abs(pnl_pct)>1:
         return {"action":"close","reason":"momentum_loss"}
     return {"action":"hold","reason":"continue"}
 
 def manage_after_entry_enhanced(df, council):
     if not STATE["open"] or STATE["qty"]<=0: return
-    px=price_now(); if not px: return
-    entry=STATE["entry"]; side=STATE["side"]; qty=STATE["qty"]; mode=STATE.get("mode","trend"); mgmt=STATE.get("management",{})
-    pnl_pct=(px-entry)/entry*(100 if side=="long" else -100); STATE["pnl"]=pnl_pct
+    px = price_now()
+    if not px:
+        return
+    entry=STATE["entry"]; side=STATE["side"]; mode=STATE.get("mode","trend"); mgmt=STATE.get("management",{})
+    pnl_pct = ((px-entry)/entry*(100) if side=="long" else (entry-px)/entry*(100))
+    STATE["pnl"]=pnl_pct
     if pnl_pct>STATE["highest_profit_pct"]: STATE["highest_profit_pct"]=pnl_pct
-    manage_take_profits(STATE, px, pnl_pct, mgmt, mode)
+    try_scale_in(df, council)
+    manage_take_profits(STATE, px, pnl_pct/100.0, mgmt, mode)
     decision=smart_exit_analysis(df, council, px, pnl_pct, side, entry)
     if decision["action"]=="close":
         log_w(f"EXIT: {decision['reason']}"); close_market_strict(decision["reason"])
@@ -663,7 +714,7 @@ def close_market_strict(reason="STRICT"):
                 if qty<=0: return 0.0, None, None
                 entry=float(p.get("entryPrice") or p.get("info",{}).get("avgEntryPrice") or 0)
                 side_raw=(p.get("side") or p.get("info",{}).get("positionSide") or "").lower()
-                side = "long" if "long" in side_raw or "both" in side_raw and STATE.get("side")=="long" else "short"
+                side = "long" if "long" in side_raw or ("both" in side_raw and STATE.get("side")=="long") else "short"
                 return qty, side, entry
         except Exception: return 0.0, None, None
         return 0.0, None, None
@@ -695,15 +746,30 @@ def close_market_strict(reason="STRICT"):
 
 def _reset_after_close(reason):
     global compound_pnl, wait_for_next_signal_side
-    # تقدير PnL البسيط (من STATE) — يمكن استبداله بقراءة من الإكستشينج إن أردت
-    pnl_pct=STATE.get("pnl",0.0)
-    bal=balance_usdt() or 0.0
-    pnl_usdt = (bal* (pnl_pct/100.0) * 0.0)  # تقدير محافظ — اتركه 0 لو غير مؤكد
-    compound_pnl += pnl_usdt
     wait_for_next_signal_side= "SELL" if STATE.get("side")=="long" else "BUY"
-    STATE.update({"open":False,"side":None,"entry":None,"qty":0.0,"pnl":0.0})
+    STATE.update({"open":False,"side":None,"entry":None,"qty":0.0,"pnl":0.0,"adds":0})
     save_state({"in_position":False,"position_qty":0,"compound_pnl":round(float(compound_pnl),6)})
     log_i(f"after-close: wait_for_next_signal_side={wait_for_next_signal_side}")
+
+# Early ignition (probe)
+def early_ignition_signal(council):
+    ind    = council.get("indicators", {})
+    basic  = ind.get("basic", {})
+    fvg    = ind.get("fvg", {})
+    obx    = ind.get("order_block", {})
+    flow   = ind.get("orderbook_flow", {})
+    struct = ind.get("market_structure", {})
+    mtf    = council.get("mtf_analysis", {}) or {}
+    adx = float(basic.get("adx", 0.0))
+    flow_sig = flow.get("signal","neutral")
+    mtf_ok = (mtf.get("overall_signal") in ("bullish","bearish")) and (max(mtf.get("bull_count",0), mtf.get("bear_count",0)) >= 2)
+    bull_core = (fvg.get("has") and fvg.get("type")=="bull") and (obx.get("has") and obx.get("type")=="bull") and (flow_sig=="buy")
+    bear_core = (fvg.get("has") and fvg.get("type")=="bear") and (obx.get("has") and obx.get("type")=="bear") and (flow_sig=="sell")
+    strong_buy  = bull_core and (struct.get("signal") in ("strong_buy","neutral")) and mtf_ok and (adx >= 18)
+    strong_sell = bear_core and (struct.get("signal") in ("strong_sell","neutral")) and mtf_ok and (adx >= 18)
+    if strong_buy and (council["score_buy"] >= council["score_sell"] + 1.0): return "buy_probe"
+    if strong_sell and (council["score_sell"] >= council["score_buy"] + 1.0): return "sell_probe"
+    return None
 
 # =================== LOOP ===================
 def ultra_trading_loop():
@@ -716,14 +782,30 @@ def ultra_trading_loop():
                 log_w(f"spread gate: {spr:.2f}bps > {MAX_SPREAD_BPS}bps")
                 time.sleep(3); continue
 
+            update_orderflow_buffers()
+
             df=fetch_ohlcv(limit=600)
             if len(df)<120: time.sleep(3); continue
             mtf=fetch_multi_timeframe(("5m","15m","1h"))
-            council=ultra_intelligent_council(df, mtf_meta={"overall_signal":mtf["overall_signal"],"bull_count":mtf["bull_count"],"bear_count":mtf["bear_count"],"confidence":mtf["confidence"],"signals":mtf["signals"]})
+            mtf_meta={"overall_signal":mtf["overall_signal"],"bull_count":mtf["bull_count"],"bear_count":mtf["bear_count"],"confidence":mtf["confidence"],"signals":mtf["signals"]}
+            council=ultra_intelligent_council(df, mtf_meta=mtf_meta)
 
             if LOG_MEDIUM_PANEL: render_medium_log(council)
 
             if not STATE["open"]:
+                # Early ignition probe
+                probe = early_ignition_signal(council)
+                if probe:
+                    px  = price_now()
+                    if not px:
+                        time.sleep(2)
+                        continue
+                    bal = balance_usdt()
+                    qty = compute_size(bal, px) * PROBE_SIZE
+                    open_market_ultra("buy" if probe=="buy_probe" else "sell", safe_qty(qty), px, council)
+                    time.sleep(2)
+                    continue
+
                 # wait-for-next-signal guard
                 if wait_for_next_signal_side:
                     sig = "BUY" if council["score_buy"]>council["score_sell"] else "SELL"
@@ -734,7 +816,11 @@ def ultra_trading_loop():
 
                 side = smart_entry_system(council)
                 if side:
-                    px=price_now(); bal=balance_usdt(); qty=compute_size(bal, px)
+                    px=price_now()
+                    if not px:
+                        time.sleep(2)
+                        continue
+                    bal=balance_usdt(); qty=compute_size(bal, px)
                     open_market_ultra(side, qty, px, council)
             else:
                 manage_after_entry_enhanced(df, council)
@@ -761,7 +847,9 @@ def metrics():
     })
 
 def keepalive_loop():
-    if not SELF_URL: log_w("keepalive disabled (SELF_URL not set)"); return
+    if not SELF_URL:
+        log_w("keepalive disabled (SELF_URL not set)")
+        return
     import requests
     sess=requests.Session()
     while True:
