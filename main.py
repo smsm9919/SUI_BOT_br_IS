@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 RF Futures Bot — RF-LIVE ONLY (Multi-Exchange: BingX & Bybit)
-• Council PRO Ultimate Decision System with Advanced Indicators
-• Golden Entry + Golden Reversal + Wick Exhaustion + Advanced Council
-• Dynamic TP ladder + Smart Exit + ATR-trailing + Volume Momentum
+• Council ULTIMATE with Footprint Analysis & Advanced Indicators
+• Golden Entry + Golden Reversal + Wick Exhaustion + Smart Exit
+• Dynamic TP ladder + ATR-trailing + Volume Momentum + Liquidity Analysis
 • Professional Logging & Dashboard + Multi-Exchange Support
 """
 
@@ -48,7 +48,7 @@ SHADOW_MODE_DASHBOARD = False
 DRY_RUN = False
 
 # ==== Addon: Logging + Recovery Settings ====
-BOT_VERSION = f"SUI Council ULTIMATE v5.0 — {EXCHANGE_NAME.upper()} Multi-Exchange"
+BOT_VERSION = f"SUI Council ULTIMATE v6.0 — {EXCHANGE_NAME.upper()} Multi-Exchange"
 print("🔁 Booting:", BOT_VERSION, flush=True)
 
 STATE_PATH = "./bot_state.json"
@@ -63,6 +63,13 @@ IMBALANCE_ALERT = 1.30
 FLOW_WINDOW = 20
 FLOW_SPIKE_Z = 1.60
 CVD_SMOOTH = 8
+
+# =================== FOOTPRINT ANALYSIS SETTINGS ===================
+FOOTPRINT_PERIOD = 20
+FOOTPRINT_VOLUME_THRESHOLD = 2.0
+DELTA_THRESHOLD = 1.5
+ABSORPTION_RATIO = 0.65
+EFFICIENCY_THRESHOLD = 0.85
 
 # =================== SETTINGS ===================
 SYMBOL     = os.getenv("SYMBOL", "SUI/USDT:USDT")
@@ -356,6 +363,7 @@ def verify_execution_environment():
     print(f"🔧 EXECUTE_ORDERS: {EXECUTE_ORDERS} | DRY_RUN: {DRY_RUN}", flush=True)
     print(f"🎯 ULTIMATE COUNCIL: min_confidence={ULTIMATE_MIN_CONFIDENCE}", flush=True)
     print(f"📈 ADVANCED INDICATORS: Volume Momentum + Stochastic RSI + Dynamic Pivots", flush=True)
+    print(f"👣 FOOTPRINT ANALYSIS: Volume Analysis + Absorption + Real Momentum", flush=True)
     print(f"⚡ RF SETTINGS: period={RF_PERIOD} | mult={RF_MULT} (SUI Optimized)", flush=True)
     
     if not EXECUTE_ORDERS:
@@ -556,6 +564,225 @@ def dynamic_trend_indicator(df, fast_period=10, slow_period=20, signal_period=9)
         "ema_fast": ema_fast.iloc[-1],
         "ema_slow": ema_slow.iloc[-1]
     }
+
+# =================== ADVANCED FOOTPRINT ANALYSIS ===================
+def advanced_footprint_analysis(df, current_price):
+    """
+    تحليل بصمة السوق المتقدم لاكتشاف:
+    - الامتصاص (Absorption)
+    - الاندفاع الحقيقي (Real Momentum)
+    - نقاط التوقف (Stops)
+    - السيولة المخفية (Hidden Liquidity)
+    """
+    if len(df) < FOOTPRINT_PERIOD + 5:
+        return {"ok": False, "reason": "لا توجد بيانات كافية"}
+    
+    try:
+        # تحليل الحجم والسعر المتقدم
+        high = df['high'].astype(float)
+        low = df['low'].astype(float)
+        close = df['close'].astype(float)
+        volume = df['volume'].astype(float)
+        open_price = df['open'].astype(float)
+        
+        # المتوسطات الحجمية
+        volume_ma = volume.rolling(FOOTPRINT_PERIOD).mean()
+        volume_ratio = volume / volume_ma.replace(0, 1)
+        
+        # حساب دلتا الحجم (الفرق بين الشراء والبيع)
+        up_volume = volume.where(close > open_price, 0)
+        down_volume = volume.where(close < open_price, 0)
+        volume_delta = (up_volume - down_volume).fillna(0)
+        
+        # كفاءة الحركة (Efficiency)
+        body_size = abs(close - open_price)
+        total_range = high - low
+        efficiency = body_size / total_range.replace(0, 1)
+        
+        # تحليل الشمعة الحالية
+        current_candle = {
+            'high': float(high.iloc[-1]),
+            'low': float(low.iloc[-1]),
+            'close': float(close.iloc[-1]),
+            'open': float(open_price.iloc[-1]),
+            'volume': float(volume.iloc[-1]),
+            'volume_ratio': float(volume_ratio.iloc[-1]),
+            'delta': float(volume_delta.iloc[-1]),
+            'efficiency': float(efficiency.iloc[-1])
+        }
+        
+        # تحليل الامتصاص
+        absorption_bullish = False
+        absorption_bearish = False
+        
+        # امتصاص صاعد: حجم عالي + كفاءة منخفضة + دلتا إيجابية
+        if (current_candle['volume_ratio'] >= FOOTPRINT_VOLUME_THRESHOLD and
+            current_candle['efficiency'] < 0.4 and
+            current_candle['delta'] > 0):
+            absorption_bullish = True
+        
+        # امتصاص هابط: حجم عالي + كفاءة منخفضة + دلتا سلبية
+        if (current_candle['volume_ratio'] >= FOOTPRINT_VOLUME_THRESHOLD and
+            current_candle['efficiency'] < 0.4 and
+            current_candle['delta'] < 0):
+            absorption_bearish = True
+        
+        # اندفاع حقيقي
+        real_momentum_bullish = False
+        real_momentum_bearish = False
+        
+        # اندفاع صاعد حقيقي: حجم عالي + كفاءة عالية + دلتا إيجابية
+        if (current_candle['volume_ratio'] >= FOOTPRINT_VOLUME_THRESHOLD and
+            current_candle['efficiency'] > EFFICIENCY_THRESHOLD and
+            current_candle['delta'] > DELTA_THRESHOLD):
+            real_momentum_bullish = True
+        
+        # اندفاع هابط حقيقي: حجم عالي + كفاءة عالية + دلتا سلبية
+        if (current_candle['volume_ratio'] >= FOOTPRINT_VOLUME_THRESHOLD and
+            current_candle['efficiency'] > EFFICIENCY_THRESHOLD and
+            current_candle['delta'] < -DELTA_THRESHOLD):
+            real_momentum_bearish = True
+        
+        # نقاط التوقف (Stop Hunts)
+        stop_hunt_bullish = False
+        stop_hunt_bearish = False
+        
+        # صيد توقف صاعد: حركة سريعة هابطة ثم ارتداد سريع
+        if len(df) >= 3:
+            prev_low = float(low.iloc[-2])
+            prev_high = float(high.iloc[-2])
+            current_low = current_candle['low']
+            current_high = current_candle['high']
+            
+            # صيد توقف هابط: اختراق قاع سابق ثم ارتداد
+            if current_low < prev_low and current_candle['close'] > prev_low:
+                stop_hunt_bullish = True
+            
+            # صيد توقف صاعد: اختراق قمة سابقة ثم انهيار
+            if current_high > prev_high and current_candle['close'] < prev_high:
+                stop_hunt_bearish = True
+        
+        # تحليل تجمعات السيولة (Liquidity Pools)
+        liquidity_analysis = analyze_liquidity_pools(df, current_price)
+        
+        # حساب قوة الإشارة
+        footprint_score_bull = 0.0
+        footprint_score_bear = 0.0
+        reasons = []
+        
+        if absorption_bullish:
+            footprint_score_bull += 2.5
+            reasons.append("امتصاص صاعد قوي")
+        
+        if absorption_bearish:
+            footprint_score_bear += 2.5
+            reasons.append("امتصاص هابط قوي")
+        
+        if real_momentum_bullish:
+            footprint_score_bull += 3.0
+            reasons.append("اندفاع صاعد حقيقي")
+        
+        if real_momentum_bearish:
+            footprint_score_bear += 3.0
+            reasons.append("اندفاع هابط حقيقي")
+        
+        if stop_hunt_bullish:
+            footprint_score_bull += 2.0
+            reasons.append("صيد توقف صاعد")
+        
+        if stop_hunt_bearish:
+            footprint_score_bear += 2.0
+            reasons.append("صيد توقف هابط")
+        
+        # إضافة تحليل السيولة
+        if liquidity_analysis.get('buy_liquidity_above'):
+            footprint_score_bull += 1.5
+            reasons.append("سيولة شراء فوق السعر")
+        
+        if liquidity_analysis.get('sell_liquidity_below'):
+            footprint_score_bear += 1.5
+            reasons.append("سيولة بيع تحت السعر")
+        
+        return {
+            "ok": True,
+            "absorption_bullish": absorption_bullish,
+            "absorption_bearish": absorption_bearish,
+            "real_momentum_bullish": real_momentum_bullish,
+            "real_momentum_bearish": real_momentum_bearish,
+            "stop_hunt_bullish": stop_hunt_bullish,
+            "stop_hunt_bearish": stop_hunt_bearish,
+            "footprint_score_bull": footprint_score_bull,
+            "footprint_score_bear": footprint_score_bear,
+            "current_candle": current_candle,
+            "liquidity_analysis": liquidity_analysis,
+            "reasons": reasons
+        }
+        
+    except Exception as e:
+        return {"ok": False, "reason": f"خطأ في التحليل: {str(e)}"}
+
+def analyze_liquidity_pools(df, current_price):
+    """تحليل تجمعات السيولة المخفية"""
+    if len(df) < 50:
+        return {}
+    
+    try:
+        high = df['high'].astype(float)
+        low = df['low'].astype(float)
+        volume = df['volume'].astype(float)
+        
+        # البحث عن مناطق السيولة (نقاط الدعم والمقاومة)
+        lookback = min(100, len(df))
+        recent_highs = high.tail(lookback)
+        recent_lows = low.tail(lookback)
+        
+        # تحديد المستويات الرئيسية
+        resistance_levels = find_significant_highs(recent_highs)
+        support_levels = find_significant_lows(recent_lows)
+        
+        # تحليل القرب من مستويات السيولة
+        buy_liquidity_above = False
+        sell_liquidity_below = False
+        
+        for level in resistance_levels:
+            if abs(current_price - level) / current_price <= 0.02:  # ضمن 2%
+                sell_liquidity_below = True
+                break
+        
+        for level in support_levels:
+            if abs(current_price - level) / current_price <= 0.02:  # ضمن 2%
+                buy_liquidity_above = True
+                break
+        
+        return {
+            "resistance_levels": resistance_levels[-3:],  # آخر 3 مستويات مقاومة
+            "support_levels": support_levels[-3:],        # آخر 3 مستويات دعم
+            "buy_liquidity_above": buy_liquidity_above,
+            "sell_liquidity_below": sell_liquidity_below
+        }
+        
+    except Exception as e:
+        return {}
+
+def find_significant_highs(series, window=5):
+    """إيجاد القمم الهامة"""
+    highs = []
+    for i in range(window, len(series) - window):
+        if (series.iloc[i] == series.iloc[i-window:i+window].max() and 
+            series.iloc[i] > series.iloc[i-1] and 
+            series.iloc[i] > series.iloc[i+1]):
+            highs.append(series.iloc[i])
+    return highs
+
+def find_significant_lows(series, window=5):
+    """إيجاد القيعان الهامة"""
+    lows = []
+    for i in range(window, len(series) - window):
+        if (series.iloc[i] == series.iloc[i-window:i+window].min() and 
+            series.iloc[i] < series.iloc[i-1] and 
+            series.iloc[i] < series.iloc[i+1]):
+            lows.append(series.iloc[i])
+    return lows
 
 # =================== SMART GOLDEN ZONE DETECTION ===================
 def _ema_gz(series, n):
@@ -763,121 +990,148 @@ def decide_strategy_mode(df, adx=None, di_plus=None, di_minus=None, rsi_ctx=None
     
     return {"mode": mode, "why": why}
 
-# =================== ULTIMATE COUNCIL VOTING SYSTEM ===================
-def ultimate_council_voting(df):
-    """نظام تصويت متقدم للمجلس مع تحليل متعدد الأبعاد"""
+# =================== ULTIMATE COUNCIL WITH FOOTPRINT ===================
+def ultimate_council_voting_with_footprint(df):
+    """مجلس الإدارة المتقدم مع تحليل بصمة السوق"""
     try:
         # المؤشرات الأساسية
         ind = compute_indicators(df)
         rsi_ctx = rsi_ma_context(df)
         gz = golden_zone_check(df, ind)
         candles = compute_candles(df)
+        current_price = float(df['close'].iloc[-1])
         
         # المؤشرات المتقدمة الجديدة
         volume_momentum = enhanced_volume_momentum(df)
         stoch_rsi = stochastic_rsi_enhanced(df)
         pivots = dynamic_pivot_points(df)
         trend_indicator = dynamic_trend_indicator(df)
+        footprint = advanced_footprint_analysis(df, current_price)
         
-        # نظام التصويت المتقدم
+        # نظام التصويت المتقدم مع Footprint
         votes_buy = 0
         votes_sell = 0
         confidence_buy = 0.0
         confidence_sell = 0.0
         detailed_logs = []
         
-        # 1. تحليل الاتجاه الأساسي (وزن عالي)
+        # 1. تحليل Footprint (أعلى وزن)
+        if footprint.get("ok"):
+            fp_bull = footprint.get("footprint_score_bull", 0)
+            fp_bear = footprint.get("footprint_score_bear", 0)
+            
+            if fp_bull > 0:
+                votes_buy += 4
+                confidence_buy += min(3.0, fp_bull)
+                for reason in footprint.get("reasons", []):
+                    if "صاعد" in reason:
+                        detailed_logs.append(f"👣 Footprint: {reason}")
+            
+            if fp_bear > 0:
+                votes_sell += 4
+                confidence_sell += min(3.0, fp_bear)
+                for reason in footprint.get("reasons", []):
+                    if "هابط" in reason:
+                        detailed_logs.append(f"👣 Footprint: {reason}")
+        
+        # 2. تحليل الاتجاه الأساسي
         if trend_indicator["signal"] in ["strong_buy", "buy"]:
             votes_buy += 3
             confidence_buy += 2.0
-            detailed_logs.append(f"🎯 الاتجاه: {trend_indicator['signal']} (زخم: {trend_indicator['momentum']:.2f}%)")
+            detailed_logs.append(f"🎯 الاتجاه: {trend_indicator['signal']}")
         
         if trend_indicator["signal"] in ["strong_sell", "sell"]:
             votes_sell += 3
             confidence_sell += 2.0
-            detailed_logs.append(f"🎯 الاتجاه: {trend_indicator['signal']} (زخم: {trend_indicator['momentum']:.2f}%)")
+            detailed_logs.append(f"🎯 الاتجاه: {trend_indicator['signal']}")
         
-        # 2. الزخم الحجمي (وزن متوسط)
+        # 3. الزخم الحجمي
         if volume_momentum["trend"] == "bull" and volume_momentum["strength"] > 1.5:
             votes_buy += 2
             confidence_buy += 1.5
-            detailed_logs.append(f"📊 زخم حجمي صاعد (قوة: {volume_momentum['strength']:.1f})")
+            detailed_logs.append(f"📊 زخم حجمي صاعد")
         
         if volume_momentum["trend"] == "bear" and volume_momentum["strength"] > 1.5:
             votes_sell += 2
             confidence_sell += 1.5
-            detailed_logs.append(f"📊 زخم حجمي هابط (قوة: {volume_momentum['strength']:.1f})")
+            detailed_logs.append(f"📊 زخم حجمي هابط")
         
-        # 3. RSI العشوائي (وزن متوسط)
+        # 4. RSI العشوائي
         if stoch_rsi["signal"] in ["bullish", "bullish_cross"] and not stoch_rsi["overbought"]:
             votes_buy += 2
             confidence_buy += 1.2
-            detailed_logs.append(f"📈 Stoch RSI إيجابي (K: {stoch_rsi['k']:.1f})")
+            detailed_logs.append(f"📈 Stoch RSI إيجابي")
         
         if stoch_rsi["signal"] in ["bearish", "bearish_cross"] and not stoch_rsi["oversold"]:
             votes_sell += 2
             confidence_sell += 1.2
-            detailed_logs.append(f"📈 Stoch RSI سلبي (K: {stoch_rsi['k']:.1f})")
+            detailed_logs.append(f"📈 Stoch RSI سلبي")
         
-        # 4. نقاط المحورية (وزن منخفض)
-        if pivots["bias"] in ["bullish", "strong_bullish"]:
-            votes_buy += 1
-            confidence_buy += 0.8
-            detailed_logs.append(f"🎯 انحياز محوري: {pivots['bias']}")
-        
-        if pivots["bias"] in ["bearish", "strong_bearish"]:
-            votes_sell += 1
-            confidence_sell += 0.8
-            detailed_logs.append(f"🎯 انحياز محوري: {pivots['bias']}")
-        
-        # 5. المناطق الذهبية (وزن عالي جداً)
+        # 5. المناطق الذهبية
         if gz and gz.get("ok"):
             if gz['zone']['type'] == 'golden_bottom' and gz['score'] >= 7.0:
-                votes_buy += 4
+                votes_buy += 3
                 confidence_buy += 2.5
-                detailed_logs.append(f"🏆 منطقة ذهبية للشراء (قوة: {gz['score']:.1f})")
+                detailed_logs.append(f"🏆 منطقة ذهبية للشراء")
             elif gz['zone']['type'] == 'golden_top' and gz['score'] >= 7.0:
-                votes_sell += 4
+                votes_sell += 3
                 confidence_sell += 2.5
-                detailed_logs.append(f"🏆 منطقة ذهبية للبيع (قوة: {gz['score']:.1f})")
+                detailed_logs.append(f"🏆 منطقة ذهبية للبيع")
         
-        # 6. شموع اليابان (وزن متوسط)
+        # 6. شموع اليابان
         if candles["score_buy"] > 2.0:
             votes_buy += 2
             confidence_buy += min(2.0, candles["score_buy"])
-            detailed_logs.append(f"🕯️ إشارة شموع شراء (قوة: {candles['score_buy']:.1f})")
+            detailed_logs.append(f"🕯️ إشارة شموع شراء")
         
         if candles["score_sell"] > 2.0:
             votes_sell += 2
             confidence_sell += min(2.0, candles["score_sell"])
-            detailed_logs.append(f"🕯️ إشارة شموع بيع (قوة: {candles['score_sell']:.1f})")
+            detailed_logs.append(f"🕯️ إشارة شموع بيع")
         
-        # 7. ADX والاتجاه (وزن عالي)
+        # 7. ADX والاتجاه
         if ind.get('adx', 0) > 25:
             if ind.get('plus_di', 0) > ind.get('minus_di', 0):
                 votes_buy += 2
                 confidence_buy += 1.5
-                detailed_logs.append(f"📊 اتجاه صاعد قوي (ADX: {ind['adx']:.1f})")
+                detailed_logs.append(f"📊 اتجاه صاعد قوي")
             else:
                 votes_sell += 2
                 confidence_sell += 1.5
-                detailed_logs.append(f"📊 اتجاه هابط قوي (ADX: {ind['adx']:.1f})")
+                detailed_logs.append(f"📊 اتجاه هابط قوي")
         
-        # 8. RSI مع المتوسط (وزن متوسط)
+        # 8. RSI مع المتوسط
         if rsi_ctx["cross"] == "bull" and rsi_ctx["rsi"] < 65:
             votes_buy += 1
             confidence_buy += 1.0
-            detailed_logs.append(f"📈 RSI إيجابي ({rsi_ctx['rsi']:.1f})")
+            detailed_logs.append(f"📈 RSI إيجابي")
         
         if rsi_ctx["cross"] == "bear" and rsi_ctx["rsi"] > 35:
             votes_sell += 1
             confidence_sell += 1.0
-            detailed_logs.append(f"📈 RSI سلبي ({rsi_ctx['rsi']:.1f})")
+            detailed_logs.append(f"📈 RSI سلبي")
         
-        # تصفية الإشارات المتضاربة
+        # 9. نقاط المحورية
+        if pivots["bias"] in ["bullish", "strong_bullish"]:
+            votes_buy += 1
+            confidence_buy += 0.8
+        
+        if pivots["bias"] in ["bearish", "strong_bearish"]:
+            votes_sell += 1
+            confidence_sell += 0.8
+        
+        # تصفية الإشارات المتضاربة مع أولوية Footprint
         if votes_buy > 0 and votes_sell > 0:
-            # نأخذ الجانب ذو الثقة الأعلى
-            if confidence_buy > confidence_sell:
+            # إذا كان Footprint يعطي إشارة قوية، نرجحها
+            if footprint.get("ok") and footprint.get("footprint_score_bull", 0) > 3:
+                votes_sell = 0
+                confidence_sell = 0
+                detailed_logs.append("🔄 ترجيح إشارة الشراء (Footprint قوي)")
+            elif footprint.get("ok") and footprint.get("footprint_score_bear", 0) > 3:
+                votes_buy = 0
+                confidence_buy = 0
+                detailed_logs.append("🔄 ترجيح إشارة البيع (Footprint قوي)")
+            elif confidence_buy > confidence_sell:
                 votes_sell = 0
                 confidence_sell = 0
                 detailed_logs.append("🔄 ترجيح إشارة الشراء (ثقة أعلى)")
@@ -892,6 +1146,7 @@ def ultimate_council_voting(df):
             "stoch_rsi": stoch_rsi,
             "pivots": pivots,
             "trend_indicator": trend_indicator,
+            "footprint_analysis": footprint,
             "ultimate_votes_buy": votes_buy,
             "ultimate_votes_sell": votes_sell,
             "ultimate_confidence_buy": confidence_buy,
@@ -909,73 +1164,14 @@ def ultimate_council_voting(df):
                 "volume_momentum": volume_momentum,
                 "stoch_rsi": stoch_rsi,
                 "pivots": pivots,
-                "trend_indicator": trend_indicator
+                "trend_indicator": trend_indicator,
+                "footprint": footprint
             }
         }
         
     except Exception as e:
-        log_w(f"ultimate_council_voting error: {e}")
+        log_w(f"ultimate_council_voting_with_footprint error: {e}")
         return {"b":0, "s":0, "score_b":0.0, "score_s":0.0, "logs":[], "ind":{}, "gz":None, "candles":{}}
-
-# =================== ADVANCED TRADE MANAGEMENT ===================
-def advanced_trade_management(df, state, current_price):
-    """إدارة متقدمة للصفقات مع جني الأرباح الديناميكي"""
-    if not state["open"] or state["qty"] <= 0:
-        return {"action": "hold", "reason": "لا توجد صفقة مفتوحة"}
-    
-    entry = state["entry"]
-    side = state["side"]
-    unrealized_pnl_pct = (current_price - entry) / entry * 100 * (1 if side == "long" else -1)
-    
-    # حساب التقلب الحالي
-    atr = compute_indicators(df).get('atr', 0.001)
-    volatility_ratio = atr / current_price * 100
-    
-    # تحديد أهداف الربح الديناميكية بناءً على التقلب
-    if volatility_ratio > 2.0:  # سوق متقلب
-        tp_levels = [0.8, 1.5, 2.5]  # أهداف أعلى
-        tp_fractions = [0.3, 0.4, 0.3]
-    elif volatility_ratio < 0.5:  # سوق هادئ
-        tp_levels = [0.4, 0.8, 1.2]  # أهداف أقل
-        tp_fractions = [0.4, 0.3, 0.3]
-    else:  # سوق عادي
-        tp_levels = [0.6, 1.2, 2.0]
-        tp_fractions = [0.3, 0.3, 0.4]
-    
-    # جني الأرباح عند المستويات
-    achieved_tps = state.get("profit_targets_achieved", 0)
-    
-    if achieved_tps < len(tp_levels) and unrealized_pnl_pct >= tp_levels[achieved_tps]:
-        close_fraction = tp_fractions[achieved_tps]
-        return {
-            "action": "partial_close",
-            "reason": f"جني أرباح عند المستوى {achieved_tps + 1}",
-            "close_fraction": close_fraction,
-            "tp_level": tp_levels[achieved_tps]
-        }
-    
-    # وقف الخسارة المتحرك المحسن
-    if unrealized_pnl_pct > 1.0:  # بدء التريل بعد تحقيق ربح 1%
-        if side == "long":
-            new_trail = current_price - (atr * 1.5)
-            if state.get("trail") is None or new_trail > state["trail"]:
-                state["trail"] = new_trail
-        else:
-            new_trail = current_price + (atr * 1.5)
-            if state.get("trail") is None or new_trail < state["trail"]:
-                state["trail"] = new_trail
-        
-        # التحقق من التريل
-        if state.get("trail"):
-            if (side == "long" and current_price <= state["trail"]) or \
-               (side == "short" and current_price >= state["trail"]):
-                return {
-                    "action": "close", 
-                    "reason": "وقف خسارة متحرك",
-                    "trail_price": state["trail"]
-                }
-    
-    return {"action": "hold", "reason": "الاستمرار في الصفقة"}
 
 # =================== POSITION RECOVERY ===================
 def _normalize_side(pos):
@@ -1189,16 +1385,16 @@ def compute_flow_metrics(df):
         return {"ok": False, "why": str(e)}
 
 # ========= Unified snapshot emitter =========
-def emit_snapshots(exchange, symbol, df, balance_fn=None, pnl_fn=None):
-    """
-    يطبع Snapshot موحّد: Bookmap + Flow + Council + Strategy + Balance/PnL
-    """
+def emit_snapshots_with_footprint(exchange, symbol, df, balance_fn=None, pnl_fn=None):
+    """لوحة تحكم محسنة مع عرض Footprint"""
     try:
         bm = bookmap_snapshot(exchange, symbol)
         flow = compute_flow_metrics(df)
-        cv = ultimate_council_voting(df)  # استخدام المجلس المتقدم
+        cv = ultimate_council_voting_with_footprint(df)  # استخدام المجلس مع Footprint
         mode = decide_strategy_mode(df)
         gz = golden_zone_check(df, {"adx": cv["ind"]["adx"]}, "buy" if cv["b"]>=cv["s"] else "sell")
+        current_price = float(df['close'].iloc[-1])
+        footprint = advanced_footprint_analysis(df, current_price)
 
         bal = None; cpnl = None
         if callable(balance_fn):
@@ -1207,6 +1403,23 @@ def emit_snapshots(exchange, symbol, df, balance_fn=None, pnl_fn=None):
         if callable(pnl_fn):
             try: cpnl = pnl_fn()
             except: cpnl = None
+
+        # عرض Footprint في الداشبورد
+        footprint_note = ""
+        if footprint.get("ok"):
+            fp_bull = footprint.get("footprint_score_bull", 0)
+            fp_bear = footprint.get("footprint_score_bear", 0)
+            footprint_note = f" | 👣 FP({fp_bull:.1f}/{fp_bear:.1f})"
+            
+            # عرض إشارات Footprint الهامة
+            if footprint.get("absorption_bullish"):
+                print(f"🟢 FOOTPRINT: امتصاص صاعد قوي | حجم: {footprint['current_candle']['volume_ratio']:.1f}x", flush=True)
+            if footprint.get("absorption_bearish"):
+                print(f"🔴 FOOTPRINT: امتصاص هابط قوي | حجم: {footprint['current_candle']['volume_ratio']:.1f}x", flush=True)
+            if footprint.get("real_momentum_bullish"):
+                print(f"🚀 FOOTPRINT: اندفاع صاعد حقيقي | دلتا: {footprint['current_candle']['delta']:+.0f}", flush=True)
+            if footprint.get("real_momentum_bearish"):
+                print(f"💥 FOOTPRINT: اندفاع هابط حقيقي | دلتا: {footprint['current_candle']['delta']:+.0f}", flush=True)
 
         if bm.get("ok"):
             imb_tag = "🟢" if bm["imbalance"]>=IMBALANCE_ALERT else ("🔴" if bm["imbalance"]<=1/IMBALANCE_ALERT else "⚖️")
@@ -1225,7 +1438,7 @@ def emit_snapshots(exchange, symbol, df, balance_fn=None, pnl_fn=None):
         dash = (f"DASH → hint-{side_hint} | Council BUY({cv['b']},{cv['score_b']:.1f}) "
                 f"SELL({cv['s']},{cv['score_s']:.1f}) | "
                 f"RSI={cv['ind'].get('rsi',0):.1f} ADX={cv['ind'].get('adx',0):.1f} "
-                f"DI={cv['ind'].get('di_spread',0):.1f}")
+                f"DI={cv['ind'].get('di_spread',0):.1f}{footprint_note}")
 
         strat_icon = "⚡" if mode["mode"]=="scalp" else "📈" if mode["mode"]=="trend" else "ℹ️"
         strat = f"Strategy: {strat_icon} {mode['mode'].upper()}"
@@ -1244,31 +1457,26 @@ def emit_snapshots(exchange, symbol, df, balance_fn=None, pnl_fn=None):
             print(f"📊 {dash}{gz_note}", flush=True)
             print(f"{strat}{(' | ' + wallet) if wallet else ''}", flush=True)
             
-            gz_snap_note = ""
-            if gz and gz.get("ok"):
-                zone_type = gz["zone"]["type"]
-                zone_score = gz["score"]
-                gz_snap_note = f" | 🟡{zone_type} s={zone_score:.1f}"
-            
+            # تحديث السناك شوت النهائي
             flow_z = flow['delta_z'] if flow and flow.get('ok') else 0.0
             bm_imb = bm['imbalance'] if bm and bm.get('ok') else 1.0
             
-            print(f"🧠 SNAP | {side_hint} | votes={cv['b']}/{cv['s']} score={cv['score_b']:.1f}/{cv['score_s']:.1f} "
+            print(f"🧠 SNAP ULTIMATE | {side_hint} | votes={cv['b']}/{cv['s']} score={cv['score_b']:.1f}/{cv['score_s']:.1f} "
                   f"| ADX={cv['ind'].get('adx',0):.1f} DI={cv['ind'].get('di_spread',0):.1f} | "
-                  f"z={flow_z:.2f} | imb={bm_imb:.2f}{gz_snap_note}", 
+                  f"z={flow_z:.2f} | imb={bm_imb:.2f}{footprint_note}{gz_note}", 
                   flush=True)
             
-            print("✅ ADDONS LIVE", flush=True)
+            print("✅ ULTIMATE ADDONS LIVE", flush=True)
 
-        return {"bm": bm, "flow": flow, "cv": cv, "mode": mode, "gz": gz, "wallet": wallet}
+        return {"bm": bm, "flow": flow, "cv": cv, "mode": mode, "gz": gz, "footprint": footprint, "wallet": wallet}
     except Exception as e:
-        print(f"🟨 AddonLog error: {e}", flush=True)
+        print(f"🟨 Ultimate AddonLog error: {e}", flush=True)
         return {"bm": None, "flow": None, "cv": {"b":0,"s":0,"score_b":0.0,"score_s":0.0,"ind":{}},
-                "mode": {"mode":"n/a"}, "gz": None, "wallet": ""}
+                "mode": {"mode":"n/a"}, "gz": None, "footprint": {}, "wallet": ""}
 
 # =================== EXECUTION MANAGER ===================
-def execute_trade_decision(side, price, qty, mode, council_data, gz_data):
-    """تنفيذ قرار التداول مع التسجيل الواضح"""
+def execute_trade_decision_with_footprint(side, price, qty, mode, council_data, gz_data):
+    """تنفيذ متقدم مع تحليل Footprint"""
     if not EXECUTE_ORDERS or DRY_RUN:
         log_i(f"DRY_RUN: {side} {qty:.4f} @ {price:.6f} | mode={mode}")
         return True
@@ -1277,14 +1485,27 @@ def execute_trade_decision(side, price, qty, mode, council_data, gz_data):
         log_e("❌ كمية غير صالحة للتنفيذ")
         return False
 
+    # تحليل Footprint للإدخال
+    footprint = council_data.get("advanced_indicators", {}).get("footprint", {})
+    footprint_note = ""
+    
+    if footprint.get("ok"):
+        fp_score = footprint.get("footprint_score_bull", 0) if side == "buy" else footprint.get("footprint_score_bear", 0)
+        footprint_note = f" | 👣 Footprint score={fp_score:.1f}"
+        
+        # تسجيل تفاصيل Footprint
+        for reason in footprint.get("reasons", []):
+            if ("صاعد" in reason and side == "buy") or ("هابط" in reason and side == "sell"):
+                log_i(f"🎯 Footprint Signal: {reason}")
+    
     gz_note = ""
     if gz_data and gz_data.get("ok"):
         gz_note = f" | 🟡 {gz_data['zone']['type']} s={gz_data['score']:.1f}"
     
     votes = council_data
-    print(f"🎯 EXECUTE: {side.upper()} {qty:.4f} @ {price:.6f} | "
+    print(f"🎯 EXECUTE ULTIMATE: {side.upper()} {qty:.4f} @ {price:.6f} | "
           f"mode={mode} | votes={votes['b']}/{votes['s']} score={votes['score_b']:.1f}/{votes['score_s']:.1f}"
-          f"{gz_note}", flush=True)
+          f"{footprint_note}{gz_note}", flush=True)
 
     try:
         if MODE_LIVE:
@@ -1292,7 +1513,12 @@ def execute_trade_decision(side, price, qty, mode, council_data, gz_data):
             params = exchange_specific_params(side, is_close=False)
             ex.create_order(SYMBOL, "market", side, qty, None, params)
         
-        log_g(f"✅ EXECUTED: {side.upper()} {qty:.4f} @ {price:.6f}")
+        log_g(f"✅ EXECUTED ULTIMATE: {side.upper()} {qty:.4f} @ {price:.6f}")
+        
+        # تسجيل تفاصيل Footprint في السجل
+        if footprint.get("ok"):
+            logging.info(f"FOOTPRINT_ENTRY: {side} | score={fp_score:.1f} | reasons={footprint.get('reasons', [])}")
+        
         return True
     except Exception as e:
         log_e(f"❌ EXECUTION FAILED: {e}")
@@ -1324,7 +1550,7 @@ def open_market_enhanced(side, qty, price):
         return False
     
     df = fetch_ohlcv()
-    snap = emit_snapshots(ex, SYMBOL, df)
+    snap = emit_snapshots_with_footprint(ex, SYMBOL, df)
     
     votes = snap["cv"]
     mode_data = decide_strategy_mode(df, 
@@ -1338,7 +1564,7 @@ def open_market_enhanced(side, qty, price):
     
     management_config = setup_trade_management(mode)
     
-    success = execute_trade_decision(side, price, qty, mode, votes, gz)
+    success = execute_trade_decision_with_footprint(side, price, qty, mode, votes, gz)
     
     if success:
         STATE.update({
@@ -1555,6 +1781,66 @@ def _reset_after_close(reason, prev_side=None):
     _arm_wait_after_close(prev_side)
     logging.info(f"AFTER_CLOSE waiting_for={wait_for_next_signal_side}")
 
+# =================== ADVANCED TRADE MANAGEMENT ===================
+def advanced_trade_management(df, state, current_price):
+    """إدارة متقدمة للصفقات مع جني الأرباح الديناميكي"""
+    if not state["open"] or state["qty"] <= 0:
+        return {"action": "hold", "reason": "لا توجد صفقة مفتوحة"}
+    
+    entry = state["entry"]
+    side = state["side"]
+    unrealized_pnl_pct = (current_price - entry) / entry * 100 * (1 if side == "long" else -1)
+    
+    # حساب التقلب الحالي
+    atr = compute_indicators(df).get('atr', 0.001)
+    volatility_ratio = atr / current_price * 100
+    
+    # تحديد أهداف الربح الديناميكية بناءً على التقلب
+    if volatility_ratio > 2.0:  # سوق متقلب
+        tp_levels = [0.8, 1.5, 2.5]  # أهداف أعلى
+        tp_fractions = [0.3, 0.4, 0.3]
+    elif volatility_ratio < 0.5:  # سوق هادئ
+        tp_levels = [0.4, 0.8, 1.2]  # أهداف أقل
+        tp_fractions = [0.4, 0.3, 0.3]
+    else:  # سوق عادي
+        tp_levels = [0.6, 1.2, 2.0]
+        tp_fractions = [0.3, 0.3, 0.4]
+    
+    # جني الأرباح عند المستويات
+    achieved_tps = state.get("profit_targets_achieved", 0)
+    
+    if achieved_tps < len(tp_levels) and unrealized_pnl_pct >= tp_levels[achieved_tps]:
+        close_fraction = tp_fractions[achieved_tps]
+        return {
+            "action": "partial_close",
+            "reason": f"جني أرباح عند المستوى {achieved_tps + 1}",
+            "close_fraction": close_fraction,
+            "tp_level": tp_levels[achieved_tps]
+        }
+    
+    # وقف الخسارة المتحرك المحسن
+    if unrealized_pnl_pct > 1.0:  # بدء التريل بعد تحقيق ربح 1%
+        if side == "long":
+            new_trail = current_price - (atr * 1.5)
+            if state.get("trail") is None or new_trail > state["trail"]:
+                state["trail"] = new_trail
+        else:
+            new_trail = current_price + (atr * 1.5)
+            if state.get("trail") is None or new_trail < state["trail"]:
+                state["trail"] = new_trail
+        
+        # التحقق من التريل
+        if state.get("trail"):
+            if (side == "long" and current_price <= state["trail"]) or \
+               (side == "short" and current_price >= state["trail"]):
+                return {
+                    "action": "close", 
+                    "reason": "وقف خسارة متحرك",
+                    "trail_price": state["trail"]
+                }
+    
+    return {"action": "hold", "reason": "الاستمرار في الصفقة"}
+
 # =================== ULTIMATE TRADE MANAGEMENT ===================
 def manage_after_entry_ultimate(df, ind, info):
     """الإدارة النهائية للصفقات مع النظام المتقدم"""
@@ -1610,10 +1896,10 @@ def manage_after_entry_enhanced(df, ind, info):
     if pnl_pct > STATE["highest_profit_pct"]:
         STATE["highest_profit_pct"] = pnl_pct
 
-    snap = emit_snapshots(ex, SYMBOL, df)
+    snap = emit_snapshots_with_footprint(ex, SYMBOL, df)
     gz = snap["gz"]
     
-    exit_signal = smart_exit_guard(STATE, df, ind, snap["flow"], snap["bm"], 
+    exit_signal = smart_exit_guard_with_footprint(STATE, df, ind, snap["flow"], snap["bm"], 
                                  px, pnl_pct/100, mode, side, entry, gz)
     
     if exit_signal["log"]:
@@ -1703,6 +1989,42 @@ def manage_after_entry_enhanced(df, ind, info):
 
 # استبدال إدارة الصفقات بالنظام المتقدم
 manage_after_entry = manage_after_entry_ultimate
+
+def smart_exit_guard_with_footprint(state, df, ind, flow, bm, now_price, pnl_pct, mode, side, entry_price, gz=None):
+    """خروج ذكي مع تحليل Footprint المتقدم"""
+    # التحليل الأساسي
+    basic_exit = smart_exit_guard(state, df, ind, flow, bm, now_price, pnl_pct, mode, side, entry_price, gz)
+    
+    # إضافة تحليل Footprint للخروج
+    footprint = ind.get('footprint_analysis', {})
+    
+    if footprint.get("ok"):
+        # اكتشاف انعكاس مبكر عبر Footprint
+        if side == "long" and footprint.get("absorption_bearish"):
+            return {
+                "action": "close", 
+                "why": "footprint_absorption_bearish",
+                "log": f"🔴 خروج Footprint | امتصاص هابط مثير للشك | pnl={pnl_pct*100:.2f}%"
+            }
+        
+        if side == "short" and footprint.get("absorption_bullish"):
+            return {
+                "action": "close", 
+                "why": "footprint_absorption_bullish",
+                "log": f"🔴 خروج Footprint | امتصاص صاعد مثير للشك | pnl={pnl_pct*100:.2f}%"
+            }
+        
+        # اكتشاف فقدان الزخم عبر Footprint
+        current_candle = footprint.get("current_candle", {})
+        if current_candle.get('volume_ratio', 0) < 0.5 and pnl_pct > 0.5:
+            return {
+                "action": "partial",
+                "why": "footprint_low_volume",
+                "qty_pct": 0.4,
+                "log": f"🟡 خروج جزئي | حجم منخفض مع ربح | pnl={pnl_pct*100:.2f}%"
+            }
+    
+    return basic_exit
 
 def smart_exit_guard(state, df, ind, flow, bm, now_price, pnl_pct, mode, side, entry_price, gz=None):
     """يقرر: Partial / Tighten / Strict Close مع لوج واضح."""
@@ -1825,8 +2147,8 @@ def log_ultimate_decision(council_data, decision):
     print("─" * 80, flush=True)
 
 # =================== ULTIMATE TRADE LOOP ===================
-def trade_loop_ultimate():
-    """حلقة تداول نهائية محسنة"""
+def trade_loop_ultimate_with_footprint():
+    """حلقة تداول نهائية مع Footprint Analysis"""
     global wait_for_next_signal_side
     loop_i = 0
     
@@ -1840,8 +2162,8 @@ def trade_loop_ultimate():
             ind = compute_indicators(df)
             spread_bps = orderbook_spread_bps()
             
-            # تحديث الـ Snapshots
-            snap = emit_snapshots(ex, SYMBOL, df,
+            # تحديث الـ Snapshots مع Footprint
+            snap = emit_snapshots_with_footprint(ex, SYMBOL, df,
                                 balance_fn=lambda: float(bal) if bal else None,
                                 pnl_fn=lambda: float(compound_pnl))
             
@@ -1849,33 +2171,50 @@ def trade_loop_ultimate():
             if STATE["open"] and px:
                 STATE["pnl"] = (px-STATE["entry"])*STATE["qty"] if STATE["side"]=="long" else (STATE["entry"]-px)*STATE["qty"]
             
-            # إدارة الصفقة المفتوحة
+            # إدارة الصفقة المفتوحة مع Footprint
             if STATE["open"]:
                 manage_after_entry_ultimate(df, ind, {
                     "price": px or info["price"], 
                     "bm": snap["bm"],
                     "flow": snap["flow"],
+                    "footprint": snap.get("footprint", {}),
                     **info
                 })
             
-            # قرار الدخول باستخدام المجلس المتقدم
+            # قرار الدخول باستخدام المجلس المتقدم مع Footprint
             reason = None
             if spread_bps is not None and spread_bps > MAX_SPREAD_BPS:
                 reason = f"انتشار مرتفع ({fmt(spread_bps,2)}bps > {MAX_SPREAD_BPS})"
             
-            council_data = ultimate_council_voting(df)
+            council_data = ultimate_council_voting_with_footprint(df)
             gz = council_data.get("gz")
+            footprint = council_data.get("advanced_indicators", {}).get("footprint", {})
             
-            # قرار التداول النهائي
+            # قرار التداول النهائي مع أولوية Footprint
             decision = None
-            if council_data["score_b"] >= ULTIMATE_MIN_CONFIDENCE and council_data["score_b"] > council_data["score_s"] + 2.0:
+            min_confidence = ULTIMATE_MIN_CONFIDENCE
+            
+            # تخفيض عتبة الثقة إذا كان Footprint قوي
+            if footprint.get("ok") and (footprint.get("footprint_score_bull", 0) > 3 or 
+                                      footprint.get("footprint_score_bear", 0) > 3):
+                min_confidence = 6.0  # تخفيض العتبة لصالح Footprint القوي
+            
+            if (council_data["score_b"] >= min_confidence and 
+                council_data["score_b"] > council_data["score_s"] + 2.0):
                 decision = "BUY"
-            elif council_data["score_s"] >= ULTIMATE_MIN_CONFIDENCE and council_data["score_s"] > council_data["score_b"] + 2.0:
+            elif (council_data["score_s"] >= min_confidence and 
+                  council_data["score_s"] > council_data["score_b"] + 2.0):
                 decision = "SELL"
             
-            # تسجيل القرار المتقدم
+            # تسجيل القرار المتقدم مع Footprint
             if decision:
                 log_ultimate_decision(council_data, decision)
+                
+                # تسجيل تفاصيل Footprint
+                if footprint.get("ok"):
+                    fp_score = (footprint.get("footprint_score_bull", 0) if decision == "BUY" 
+                               else footprint.get("footprint_score_bear", 0))
+                    print(f"🎯 FOOTPRINT CONFIRMATION: {decision} | score={fp_score:.1f}", flush=True)
             
             if not STATE["open"] and decision and reason is None:
                 # التحقق من سياسة الانتظار
@@ -1901,8 +2240,8 @@ def trade_loop_ultimate():
             logging.error(f"trade_loop error: {e}\n{traceback.format_exc()}")
             time.sleep(BASE_SLEEP)
 
-# استبدال حلقة التداول بالنظام المتقدم
-trade_loop = trade_loop_ultimate
+# استبدال حلقة التداول النهائية
+trade_loop = trade_loop_ultimate_with_footprint
 
 # =================== API / KEEPALIVE ===================
 app = Flask(__name__)
@@ -1918,7 +2257,7 @@ def metrics():
         "symbol": SYMBOL, "interval": INTERVAL, "mode": "live" if MODE_LIVE else "paper",
         "leverage": LEVERAGE, "risk_alloc": RISK_ALLOC, "price": price_now(),
         "state": STATE, "compound_pnl": compound_pnl,
-        "entry_mode": "ULTIMATE_COUNCIL", "wait_for_next_signal": wait_for_next_signal_side,
+        "entry_mode": "ULTIMATE_COUNCIL_WITH_FOOTPRINT", "wait_for_next_signal": wait_for_next_signal_side,
         "guards": {"max_spread_bps": MAX_SPREAD_BPS, "final_chunk_qty": FINAL_CHUNK_QTY}
     })
 
@@ -1928,7 +2267,7 @@ def health():
         "ok": True, "exchange": EXCHANGE_NAME, "mode": "live" if MODE_LIVE else "paper",
         "open": STATE["open"], "side": STATE["side"], "qty": STATE["qty"],
         "compound_pnl": compound_pnl, "timestamp": datetime.utcnow().isoformat(),
-        "entry_mode": "ULTIMATE_COUNCIL", "wait_for_next_signal": wait_for_next_signal_side
+        "entry_mode": "ULTIMATE_COUNCIL_WITH_FOOTPRINT", "wait_for_next_signal": wait_for_next_signal_side
     }), 200
 
 def keepalive_loop():
@@ -1944,9 +2283,16 @@ def keepalive_loop():
         except Exception: pass
         time.sleep(50)
 
+# =================== INTEGRATION ===================
+# استبدال الدوال الأساسية بالإصدارات المحسنة
+ultimate_council_voting = ultimate_council_voting_with_footprint
+smart_exit_guard = smart_exit_guard_with_footprint
+execute_trade_decision = execute_trade_decision_with_footprint
+emit_snapshots = emit_snapshots_with_footprint
+
 # =================== BOOT ===================
 if __name__ == "__main__":
-    log_banner("SUI COUNCIL ULTIMATE BOT - MULTI-EXCHANGE")
+    log_banner("SUI COUNCIL ULTIMATE BOT - FOOTPRINT ANALYSIS")
     state = load_state() or {}
     state.setdefault("in_position", False)
 
@@ -1962,6 +2308,7 @@ if __name__ == "__main__":
     print(colored(f"⚡ RISK: {int(RISK_ALLOC*100)}% × {LEVERAGE}x • ULTIMATE_COUNCIL=ENABLED", "yellow"))
     print(colored(f"🏆 ULTIMATE MIN CONFIDENCE: {ULTIMATE_MIN_CONFIDENCE}", "yellow"))
     print(colored(f"📊 ADVANCED INDICATORS: Volume Momentum + Stochastic RSI + Dynamic Pivots", "yellow"))
+    print(colored(f"👣 FOOTPRINT ANALYSIS: Volume Analysis + Absorption + Real Momentum + Stop Hunts", "yellow"))
     print(colored(f"📈 DYNAMIC TREND INDICATOR: Fast={TREND_FAST_PERIOD} Slow={TREND_SLOW_PERIOD}", "yellow"))
     print(colored(f"🚀 EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
     
