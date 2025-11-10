@@ -125,9 +125,10 @@ def log_banner(text): print(f"\n{'—'*12} {text} {'—'*12}\n", flush=True)
 def save_state(state: dict):
     try:
         state["ts"] = int(time.time())
+        state["compound_pnl"] = round(float(compound_pnl), 6)  # حفظ الربح التراكمي
         with open(STATE_PATH, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-        log_i(f"state saved → {STATE_PATH}")
+        log_i(f"state saved → {STATE_PATH} (compound_pnl: {compound_pnl:.4f})")
     except Exception as e:
         log_w(f"state save failed: {e}")
 
@@ -1070,8 +1071,13 @@ def ultra_intelligent_council(df, mtf_data=None):
 
 # =================== MEDIUM LOG PANEL ===================
 def render_medium_log(council_data):
-    """لوحة متوسطة تعرض حالة التداول الكاملة"""
+    """لوحة متوسطة محسنة تعرض الرصيد والربح التراكمي"""
     try:
+        # رصيد المحفظة + الربح التراكمي
+        bal = balance_usdt()
+        print(f"💼 BALANCE: {bal:.2f if bal is not None else 'N/A'} USDT | "
+              f"📦 COMPOUND PNL: {compound_pnl:+.4f} USDT", flush=True)
+
         ind = council_data.get("indicators", {})
         basic = ind.get("basic", {})
         stx = ind.get("super_trend", {})
@@ -1124,16 +1130,11 @@ def render_medium_log(council_data):
             current_price = price_now() or entry
             if entry and current_price:
                 price_diff = ((current_price - entry) / entry * 100) * (1 if side == "long" else -1)
-                print(f"\n🎯 MODE={mode.upper()} | POS={side.upper()} | PnL={pnl:.2f}% | TP_hits={achieved}", flush=True)
-                print(f"   📊 Entry: {entry:.6f} | Current: {current_price:.6f} | Diff: {price_diff:.2f}%", flush=True)
+                print(f"🧭 MODE={mode.upper()} | POS={side.upper()} | PnL={pnl:.2f}% | TP_hits={achieved} | entry={entry:.6f}", flush=True)
             else:
-                print(f"\n🎯 MODE={mode.upper()} | POS={side.upper()} | PnL={pnl:.2f}% | TP_hits={achieved}", flush=True)
+                print(f"🧭 MODE={mode.upper()} | POS={side.upper()} | PnL={pnl:.2f}% | TP_hits={achieved}", flush=True)
         else:
-            print(f"\n⚪ NO OPEN POSITIONS | Waiting: {wait_for_next_signal_side}", flush=True)
-
-        # إجمالي الأرباح
-        if compound_pnl != 0:
-            print(f"💰 TOTAL PNL: {compound_pnl:.4f} USDT", flush=True)
+            print(f"⚪ NO OPEN POSITIONS | Waiting: {wait_for_next_signal_side}", flush=True)
 
         # بانِل مختصرة — مؤشرات + إستراتيجيات
         print("─" * 80, flush=True)
@@ -1161,7 +1162,15 @@ STATE = {
     "tp1_done": False, "tp_levels_hit": [],
     "highest_profit_pct": 0.0, "profit_targets_achieved": 0,
 }
-compound_pnl = 0.0
+
+# استعادة الربح التراكمي عند الإقلاع
+st_boot = load_state() or {}
+try:
+    compound_pnl = float(st_boot.get("compound_pnl", 0.0))
+    log_i(f"💰 تم استعادة الربح التراكمي: {compound_pnl:.4f} USDT")
+except Exception:
+    compound_pnl = 0.0
+
 wait_for_next_signal_side = None
 
 def _round_amt(q):
@@ -1461,6 +1470,24 @@ def close_market_strict(reason="STRICT"):
             logging.error(f"_read_position error: {e}")
         return 0.0, None, None
 
+    def _reset_after_close(reason, prev_side=None):
+        global wait_for_next_signal_side
+        prev_side = prev_side or STATE.get("side")
+        STATE.update({
+            "open": False, "side": None, "entry": None, "qty": 0.0,
+            "pnl": 0.0, "bars": 0, "trail": None, "breakeven": None,
+            "tp1_done": False, "tp_levels_hit": [],
+            "highest_profit_pct": 0.0, "profit_targets_achieved": 0,
+        })
+        save_state({
+            "in_position": False, 
+            "position_qty": 0,
+            "compound_pnl": round(float(compound_pnl), 6)
+        })
+        
+        wait_for_next_signal_side = "sell" if prev_side=="long" else ("buy" if prev_side=="short" else None)
+        logging.info(f"AFTER_CLOSE waiting_for={wait_for_next_signal_side}")
+
     exch_qty, exch_side, exch_entry = _read_position()
     if exch_qty <= 0:
         if STATE.get("open"):
@@ -1498,20 +1525,6 @@ def close_market_strict(reason="STRICT"):
         except Exception as e:
             last_error = e; logging.error(f"close_market_strict attempt {attempts+1}: {e}"); attempts += 1; time.sleep(2.0)
     log_e(f"STRICT CLOSE FAILED after 6 attempts — last error: {last_error}")
-
-def _reset_after_close(reason, prev_side=None):
-    global wait_for_next_signal_side
-    prev_side = prev_side or STATE.get("side")
-    STATE.update({
-        "open": False, "side": None, "entry": None, "qty": 0.0,
-        "pnl": 0.0, "bars": 0, "trail": None, "breakeven": None,
-        "tp1_done": False, "tp_levels_hit": [],
-        "highest_profit_pct": 0.0, "profit_targets_achieved": 0,
-    })
-    save_state({"in_position": False, "position_qty": 0})
-    
-    wait_for_next_signal_side = "sell" if prev_side=="long" else ("buy" if prev_side=="short" else None)
-    logging.info(f"AFTER_CLOSE waiting_for={wait_for_next_signal_side}")
 
 # =================== ULTRA TRADING LOOP ===================
 def ultra_trading_loop():
@@ -1592,6 +1605,7 @@ def metrics():
         "leverage": LEVERAGE, 
         "risk_alloc": RISK_ALLOC, 
         "price": price_now(),
+        "balance": balance_usdt(),  # جديد
         "state": STATE, 
         "compound_pnl": compound_pnl,
         "bot_version": BOT_VERSION
