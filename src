@@ -1,0 +1,17 @@
+# من جذر المشروع
+mkdir -p src
+
+# انقل ملفات البوت إلى src
+git mv main.py src/
+git mv talib_shim.py src/
+git mv rich_logger.py src/
+
+# لو عندك ملفات/موديولات إضافية (.py) انقلها أيضًا
+# git mv utils.py src/
+# git mv strategies/*.py src/strategies/
+
+# إبقِ هذه الملفات في الجذر (لا تنقلها):
+# requirements.txt, render.yaml (إن وجد), README.md
+
+git commit -m "move bot files into src/"
+git push
