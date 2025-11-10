@@ -651,7 +651,8 @@ def detect_iceberg():
             near_th = px_now * ICEBERG_TRADE_NEAR_PCT / 100.0
             vol_near=sum(t["amount"] for t in TRADES_BUF if abs(t["price"]-px_now)<=near_th)
             refilled = (q_now >= q_max*ICEBERG_REFILL_RATIO) and (q_max > q_min*1.05)
-            out.append({"px":px_now,"q_now":q_now,"q_max":q_max,"vol_near":vol_near,"refilled":refilled}
+            # ✅ التصحيح - إضافة القوس المفقود
+            out.append({"px":px_now,"q_now":q_now,"q_max":q_max,"vol_near":vol_near,"refilled":refilled})
         return out
     def best(stats):
         cand=[ (s["vol_near"] / max(s["q_max"],1e-9), s) for s in stats if s["refilled"] ]
@@ -723,26 +724,27 @@ def ultra_intelligent_council(df, mtf_meta=None):
         if candle_ctx["strong"]:
             if candle_ctx["impulse"]:
                 if candle_ctx["direction"]=="bull":
-                    votes_buy += 3; score_buy += 2.0; logs.append(f"💥 Impulse Bull | body={candle_ctx['body_ratio']:.2f}"); confirms.append("Impulse")
+                    votes_b += 3; score_b += 2.0; logs.append(f"💥 Impulse Bull | body={candle_ctx['body_ratio']:.2f}"); confirms.append("Impulse")
                 else:
-                    votes_sell += 3; score_sell += 2.0; logs.append(f"💥 Impulse Bear | body={candle_ctx['body_ratio']:.2f}"); confirms.append("Impulse")
+                    votes_s += 3; score_s += 2.0; logs.append(f"💥 Impulse Bear | body={candle_ctx['body_ratio']:.2f}"); confirms.append("Impulse")
+                    
             if candle_ctx["harvest"]:
                 if candle_ctx["direction"]=="bull":
-                    votes_buy += 2; score_buy += 1.5; logs.append(f"🪄 Wick Harvest (Buy) | wick={candle_ctx['wick_ratio']:.2f}"); confirms.append("WickHarvest")
+                    votes_b += 2; score_b += 1.5; logs.append(f"🪄 Wick Harvest (Buy) | wick={candle_ctx['wick_ratio']:.2f}"); confirms.append("WickHarvest")
                 else:
-                    votes_sell += 2; score_sell += 1.5; logs.append(f"🪄 Wick Harvest (Sell) | wick={candle_ctx['wick_ratio']:.2f}"); confirms.append("WickHarvest")
+                    votes_s += 2; score_s += 1.5; logs.append(f"🪄 Wick Harvest (Sell) | wick={candle_ctx['wick_ratio']:.2f}"); confirms.append("WickHarvest")
 
         # --- Liquidity Sweep bonus ---
         if sweep_ctx.get("has"):
             if sweep_ctx["type"]=="sell_sweep":
-                votes_buy += 2; score_buy += 1.2; logs.append("🧲 Sweep Below ⇒ BUY bias"); confirms.append("Sweep")
+                votes_b += 2; score_b += 1.2; logs.append("🧲 Sweep Below ⇒ BUY bias"); confirms.append("Sweep")
             if sweep_ctx["type"]=="buy_sweep":
-                votes_sell += 2; score_sell += 1.2; logs.append("🧲 Sweep Above ⇒ SELL bias"); confirms.append("Sweep")
+                votes_s += 2; score_s += 1.2; logs.append("🧲 Sweep Above ⇒ SELL bias"); confirms.append("Sweep")
 
         # --- SCALP Fusion (inside-council) ---
         px = float(df["close"].iloc[-1])
         scalp_meta = scalp_council_fusion(df, {
-            "indicators":{
+            "indicators": {
                 "basic": ind_basic,
                 "bollinger": bb,
                 "fvg": fvg,
