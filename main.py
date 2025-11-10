@@ -19,6 +19,12 @@ import ccxt
 from flask import Flask, jsonify
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
 
+# ============== RICH LOGGER IMPORT ==============
+from rich_logger import (
+    banner, council_table, indicators_table,
+    entry_panel, tp_event, partial_close, strict_close, trail_update
+)
+
 # ============== TALIB COMPATIBILITY LAYER ==============
 try:
     import talib
@@ -1425,7 +1431,7 @@ def manage_intelligent_position(df, indicators, price_info):
         )
         
         if exit_decision["action"] == "close":
-            log_i(f"🔴 INTELLIGENT EXIT: {exit_decision['reason']}")
+            strict_close(exit_decision['reason'], STATE.get("pnl", 0.0))
             close_market_strict(exit_decision['reason'])
         elif exit_decision["action"] == "partial":
             close_qty = safe_qty(qty * exit_decision["qty_pct"])
@@ -1435,7 +1441,7 @@ def manage_intelligent_position(df, indicators, price_info):
                     try:
                         params = exchange_specific_params(close_side, is_close=True)
                         ex.create_order(SYMBOL, "market", close_side, close_qty, None, params)
-                        log_g(f"🎯 PARTIAL CLOSE: {exit_decision['reason']} - {close_qty:.4f} units")
+                        partial_close(exit_decision['reason'], close_qty)
                         STATE["qty"] = safe_qty(qty - close_qty)
                     except Exception as e:
                         log_e(f"❌ PARTIAL CLOSE FAILED: {e}")
@@ -1531,13 +1537,13 @@ def update_intelligent_trailing_stop(current_price, side, indicators, market_pha
                 if STATE.get("trail") is None or new_trail > STATE["trail"]:
                     STATE["trail"] = new_trail
                     if STATE["trail"] > STATE.get("entry", 0):
-                        log_i(f"🔼 Intelligent trail updated: {STATE['trail']:.6f}")
+                        trail_update(STATE["trail"], side)
             else:
                 new_trail = current_price + (atr * trail_mult)
                 if STATE.get("trail") is None or new_trail < STATE["trail"]:
                     STATE["trail"] = new_trail
                     if STATE["trail"] < STATE.get("entry", float('inf')):
-                        log_i(f"🔽 Intelligent trail updated: {STATE['trail']:.6f}")
+                        trail_update(STATE["trail"], side)
         
         # تفعيل وقف الخسارة عند نقطة التعادل بعد تحقيق ربح معين
         if STATE.get("breakeven_armed") and not STATE.get("breakeven_active") and pnl_pct >= 1.5:
@@ -1587,15 +1593,14 @@ def ultra_intelligent_trading_loop():
             STATE["last_ind"] = council_data.get("indicators", {})
             STATE["last_spread_bps"] = orderbook_spread_bps()
             
-            # عرض معلومات السوق
+            # حساب تدفق الحجم للتقرير
+            STATE["last_flow"] = compute_flow_metrics(df)
+            
+            # عرض معلومات السوق — احترافي وملوّن
             if LOG_ADDONS:
-                log_i(f"🏪 MARKET: {market_phase.upper()} | VOLATILITY: {volatility_regime} ({volatility_ratio:.2f})")
-                log_i(f"🎯 COUNCIL: B{ council_data['b'] }/S{ council_data['s'] } | "
-                      f"Score: { council_data['score_b']:.1f }/{ council_data['score_s']:.1f } | "
-                      f"Confidence: { council_data['confidence']:.2f }")
-                
-                for log_msg in council_data.get("logs", [])[-5:]:  # آخر 5 رسائل فقط
-                    log_i(f"   {log_msg}")
+                banner("🏪 حالة السوق", f"المرحلة: {market_phase.upper()}  |  التقلب: {volatility_regime} ({float(volatility_ratio or 0):.2f})")
+                council_table(council_data)
+                indicators_table(council_data.get("indicators", {}))
             
             # إدارة المركز المفتوح
             if STATE["open"]:
@@ -1666,7 +1671,12 @@ def ultra_intelligent_trading_loop():
                                 "opened_at": int(time.time())
                             })
                             
-                            print_position_snapshot("INTELLIGENT_OPEN")
+                            # عرض بانل فتح الصفقة
+                            entry_panel(
+                                "buy" if signal_side == "buy" else "sell",
+                                position_size, current_price, STATE.get("mode","intelligent_trend"),
+                                council_data, council_data.get("indicators", {}), STATE.get("last_flow", {})
+                            )
             
             # التحقق من تحقيق الهدف اليومي
             if trade_manager.daily_profit >= PROFIT_TARGET_DAILY:
