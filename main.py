@@ -18,7 +18,17 @@ import numpy as np
 import ccxt
 from flask import Flask, jsonify
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
-import talib
+
+# ============== TALIB COMPATIBILITY LAYER ==============
+try:
+    import talib
+    TALIB_SOURCE = "native"
+    print("✅ Using native TA-Lib")
+except ModuleNotFoundError:
+    from talib_shim import talib
+    TALIB_SOURCE = "shim"
+    print("✅ Using TA-Lib shim (pure Python)")
+
 from scipy import stats
 
 try:
@@ -761,6 +771,40 @@ def compute_flow_metrics(df):
     except Exception as e:
         return {"ok": False, "why": str(e)}
 
+# =================== BASIC INDICATORS ===================
+def compute_indicators(df):
+    """حساب المؤشرات الأساسية"""
+    try:
+        close = df['close'].astype(float)
+        high = df['high'].astype(float)
+        low = df['low'].astype(float)
+        
+        # RSI
+        rsi = talib.RSI(close, timeperiod=RSI_LEN)
+        rsi_ma = talib.SMA(rsi, timeperiod=RSI_MA_LEN)
+        
+        # ADX و Directional Indicators
+        adx = talib.ADX(high, low, close, timeperiod=ADX_LEN)
+        plus_di = talib.PLUS_DI(high, low, close, timeperiod=ADX_LEN)
+        minus_di = talib.MINUS_DI(high, low, close, timeperiod=ADX_LEN)
+        di_spread = plus_di - minus_di
+        
+        # ATR
+        atr = talib.ATR(high, low, close, timeperiod=ATR_LEN)
+        
+        return {
+            'rsi': rsi,
+            'rsi_ma': rsi_ma,
+            'adx': adx,
+            'plus_di': plus_di,
+            'minus_di': minus_di,
+            'di_spread': di_spread,
+            'atr': atr
+        }
+    except Exception as e:
+        log_w(f"Basic indicators error: {e}")
+        return {}
+
 # =================== ADVANCED INDICATORS ===================
 def compute_advanced_indicators(df):
     """حساب المؤشرات المتقدمة"""
@@ -815,6 +859,128 @@ def compute_advanced_indicators(df):
     except Exception as e:
         log_w(f"Advanced indicators error: {e}")
         return {}
+
+# =================== CANDLE ANALYSIS ===================
+def compute_candles(df):
+    """تحليل تشكيلات الشموع"""
+    try:
+        if len(df) < 3:
+            return {"score_buy": 0, "score_sell": 0, "pattern": "insufficient_data"}
+            
+        open_p = df['open'].astype(float)
+        high = df['high'].astype(float)
+        low = df['low'].astype(float)
+        close = df['close'].astype(float)
+        
+        score_buy = 0
+        score_sell = 0
+        patterns = []
+        
+        # تحليل الشمعة الحالية
+        current_body = abs(close.iloc[-1] - open_p.iloc[-1])
+        current_range = high.iloc[-1] - low.iloc[-1]
+        body_ratio = current_body / current_range if current_range > 0 else 0
+        
+        # شمعة صاعدة قوية
+        if close.iloc[-1] > open_p.iloc[-1] and body_ratio > 0.7:
+            score_buy += 2
+            patterns.append("strong_bullish")
+        # شمعة هابطة قوية
+        elif close.iloc[-1] < open_p.iloc[-1] and body_ratio > 0.7:
+            score_sell += 2
+            patterns.append("strong_bearish")
+            
+        # دوجي - عدم قرار
+        if body_ratio < 0.1:
+            patterns.append("doji")
+            
+        # شمعة مطرقة
+        if (min(open_p.iloc[-1], close.iloc[-1]) - low.iloc[-1]) > (2 * current_body) and current_body > 0:
+            score_buy += 1
+            patterns.append("hammer")
+            
+        # شمعة شنق
+        if (high.iloc[-1] - max(open_p.iloc[-1], close.iloc[-1])) > (2 * current_body) and current_body > 0:
+            score_sell += 1
+            patterns.append("hanging_man")
+            
+        return {
+            "score_buy": score_buy,
+            "score_sell": score_sell,
+            "pattern": ", ".join(patterns) if patterns else "neutral"
+        }
+    except Exception as e:
+        log_w(f"Candle analysis error: {e}")
+        return {"score_buy": 0, "score_sell": 0, "pattern": "error"}
+
+# =================== GOLDEN ZONE DETECTION ===================
+def golden_zone_check(df, indicators):
+    """كشف المناطق الذهبية للدخول"""
+    try:
+        if len(df) < 50:
+            return {"ok": False, "score": 0, "zone": {}}
+            
+        high = df['high'].astype(float)
+        low = df['low'].astype(float)
+        close = df['close'].astype(float)
+        volume = df['volume'].astype(float)
+        
+        # حساب مستويات فيبوناتشي
+        recent_high = high.tail(20).max()
+        recent_low = low.tail(20).min()
+        range_size = recent_high - recent_low
+        
+        fib_618 = recent_high - range_size * FIB_LOW
+        fib_786 = recent_high - range_size * FIB_HIGH
+        
+        current_price = close.iloc[-1]
+        
+        # تحديد إذا كان السعر في منطقة ذهبية
+        in_golden_zone = fib_786 <= current_price <= fib_618
+        
+        if not in_golden_zone:
+            return {"ok": False, "score": 0, "zone": {}}
+            
+        # حساب قوة المنطقة
+        score = 0
+        
+        # تحليل RSI
+        rsi = indicators.get('rsi', 50)
+        if 30 <= rsi <= 40:
+            score += 2  # RSI في منطقة ذهبية للشراء
+        elif 25 <= rsi <= 35:
+            score += 3  # RSI في منطقة ذهبية قوية للشراء
+            
+        # تحليل الحجم
+        vol_ma = volume.rolling(VOL_MA_LEN).mean().iloc[-1]
+        current_vol = volume.iloc[-1]
+        if current_vol > vol_ma:
+            score += 1  # حجم مرتفع يؤكد المنطقة
+            
+        # تحليل الشموع
+        candles = compute_candles(df)
+        score += candles.get('score_buy', 0)
+        
+        # تحليل الزخم
+        if rsi < 35:
+            score += 1
+            
+        zone_type = "golden_bottom" if current_price <= (recent_high + recent_low) / 2 else "golden_top"
+        
+        return {
+            "ok": True,
+            "score": min(10, score),
+            "zone": {
+                "type": zone_type,
+                "fib_618": fib_618,
+                "fib_786": fib_786,
+                "current_price": current_price
+            }
+        }
+        
+    except Exception as e:
+        log_w(f"Golden zone check error: {e}")
+        return {"ok": False, "score": 0, "zone": {}}
 
 # =================== ULTRA INTELLIGENT COUNCIL AI ===================
 def ultra_intelligent_council_ai(df):
@@ -1097,6 +1263,58 @@ def ultra_intelligent_council_ai(df):
         log_e(f"Ultra intelligent council error: {e}")
         return {"b": 0, "s": 0, "score_b": 0.0, "score_s": 0.0, "confidence": 0.0, "logs": [f"Error: {e}"]}
 
+# =================== TRADE EXECUTION ===================
+def close_market_strict(reason=""):
+    """إغلاق صارم للمركز"""
+    global STATE
+    if not STATE["open"] or STATE["qty"] <= 0:
+        return True
+
+    side = "sell" if STATE["side"] == "long" else "buy"
+    qty = STATE["qty"]
+    
+    log_i(f"🔒 CLOSING POSITION: {side.upper()} {qty:.4f} — {reason}")
+    
+    if not EXECUTE_ORDERS or DRY_RUN:
+        log_i(f"DRY_RUN CLOSE: {side} {qty:.4f}")
+        STATE.update({"open": False, "side": None, "entry": None, "qty": 0.0, "pnl": 0.0})
+        return True
+
+    for attempt in range(CLOSE_RETRY_ATTEMPTS):
+        try:
+            if MODE_LIVE:
+                params = exchange_specific_params(side, is_close=True)
+                ex.create_order(SYMBOL, "market", side, qty, None, params)
+            
+            log_g(f"✅ POSITION CLOSED: {side.upper()} {qty:.4f}")
+            STATE.update({"open": False, "side": None, "entry": None, "qty": 0.0, "pnl": 0.0})
+            
+            # تحديث الربح في مدير الصفقات
+            if STATE.get("entry") and price_now():
+                exit_price = price_now()
+                if STATE["side"] == "long":
+                    profit = (exit_price - STATE["entry"]) * STATE["qty"]
+                else:
+                    profit = (STATE["entry"] - exit_price) * STATE["qty"]
+                
+                trade_manager.record_trade(
+                    side=STATE["side"],
+                    entry=STATE["entry"],
+                    exit_price=exit_price,
+                    quantity=STATE["qty"],
+                    profit=profit,
+                    duration=time.time() - STATE.get("opened_at", time.time())
+                )
+            
+            return True
+        except Exception as e:
+            log_w(f"Close attempt {attempt+1} failed: {e}")
+            if attempt < CLOSE_RETRY_ATTEMPTS - 1:
+                time.sleep(CLOSE_VERIFY_WAIT_S)
+    
+    log_e(f"❌ FAILED TO CLOSE POSITION AFTER {CLOSE_RETRY_ATTEMPTS} ATTEMPTS")
+    return False
+
 # =================== ENHANCED TRADE EXECUTION ===================
 def execute_intelligent_trade(side, price, qty, council_data, market_analysis):
     """تنفيذ صفقة ذكية مع تحليل متقدم"""
@@ -1342,6 +1560,7 @@ def ultra_intelligent_trading_loop():
     log_i(f"⏰ Interval: {INTERVAL}")
     log_i(f"🎯 Leverage: {LEVERAGE}x")
     log_i(f"📊 Risk Allocation: {RISK_ALLOC*100}%")
+    log_i(f"📊 TA-Lib Source: {TALIB_SOURCE}")
     
     while True:
         try:
@@ -1435,7 +1654,8 @@ def ultra_intelligent_trading_loop():
                                 "breakeven": None,
                                 "highest_profit_pct": 0.0,
                                 "profit_targets_achieved": 0,
-                                "mode": "intelligent_trend"
+                                "mode": "intelligent_trend",
+                                "opened_at": time.time()
                             })
                             
                             save_state({
@@ -1469,7 +1689,7 @@ STATE = {
     "open": False, "side": None, "entry": None, "qty": 0.0,
     "pnl": 0.0, "bars": 0, "trail": None, "breakeven": None,
     "tp1_done": False, "highest_profit_pct": 0.0,
-    "profit_targets_achieved": 0,
+    "profit_targets_achieved": 0, "opened_at": None
 }
 
 compound_pnl = 0.0
@@ -1491,6 +1711,7 @@ def home():
             <p><strong>Status:</strong> {'🟢 LIVE' if MODE_LIVE else '🟡 PAPER'}</p>
             <p><strong>Daily PnL:</strong> {trade_manager.daily_profit:.2f} USDT</p>
             <p><strong>Win Rate:</strong> {trade_manager.win_rate:.1f}%</p>
+            <p><strong>TA-Lib Source:</strong> {TALIB_SOURCE}</p>
             <p><a href="/health">Health Check</a> | <a href="/metrics">Metrics</a> | <a href="/performance">Performance</a></p>
         </body>
     </html>
@@ -1505,7 +1726,8 @@ def health():
         "symbol": SYMBOL,
         "position_open": STATE["open"],
         "daily_profit": trade_manager.daily_profit,
-        "win_rate": trade_manager.win_rate
+        "win_rate": trade_manager.win_rate,
+        "talib_source": TALIB_SOURCE
     })
 
 @app.route("/metrics")
@@ -1521,7 +1743,8 @@ def metrics():
         "consecutive_losses": trade_manager.consecutive_losses,
         "total_trades": len(trade_manager.trade_history),
         "position": STATE,
-        "performance_suggestions": trade_manager.get_trade_suggestions()
+        "performance_suggestions": trade_manager.get_trade_suggestions(),
+        "talib_source": TALIB_SOURCE
     })
 
 @app.route("/performance")
@@ -1578,6 +1801,7 @@ def startup_sequence():
     log_i(f"   Daily PnL: {trade_manager.daily_profit:.2f} USDT")
     log_i(f"   Consecutive Wins: {trade_manager.consecutive_wins}")
     log_i(f"   Consecutive Losses: {trade_manager.consecutive_losses}")
+    log_i(f"   TA-Lib Source: {TALIB_SOURCE}")
     
     log_g("🚀 ULTRA INTELLIGENT TRADING BOT READY!")
     return True
