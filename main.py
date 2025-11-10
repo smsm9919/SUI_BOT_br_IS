@@ -18,6 +18,16 @@ import ccxt
 from flask import Flask, jsonify
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
 
+# =================== INITIALIZE LOGGING ===================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[
+        RotatingFileHandler("bot.log", maxBytes=5_000_000, backupCount=3),
+        logging.StreamHandler()
+    ]
+)
+
 try:
     from termcolor import colored
 except Exception:
@@ -45,6 +55,7 @@ DRY_RUN = False
 # ==== Enhanced Logging ====
 LOG_LEGACY = False
 LOG_ADDONS = True
+LOG_MEDIUM_PANEL = True   # لوج متوسط: مؤشرات + إستراتيجيات + حالة الصفقة
 
 BOT_VERSION = f"SUI ULTRA PRO TRADER v6.0 — {EXCHANGE_NAME.upper()}"
 print("🚀 BOOTING:", BOT_VERSION, flush=True)
@@ -102,6 +113,101 @@ GOLDEN_REVERSAL_SCORE = 7.5
 TREND_STRENGTH_THRESHOLD = 25
 VOLUME_CONFIRMATION_THRESHOLD = 1.2
 MOMENTUM_CONFIRMATION_PERIOD = 3
+
+# =================== PROFESSIONAL LOGGING ===================
+def log_i(msg): print(f"ℹ️ {msg}", flush=True)
+def log_g(msg): print(f"✅ {msg}", flush=True)
+def log_w(msg): print(f"🟨 {msg}", flush=True)
+def log_e(msg): print(f"❌ {msg}", flush=True)
+
+def log_banner(text): print(f"\n{'—'*12} {text} {'—'*12}\n", flush=True)
+
+def save_state(state: dict):
+    try:
+        state["ts"] = int(time.time())
+        with open(STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        log_i(f"state saved → {STATE_PATH}")
+    except Exception as e:
+        log_w(f"state save failed: {e}")
+
+def load_state() -> dict:
+    try:
+        if not os.path.exists(STATE_PATH): return {}
+        with open(STATE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log_w(f"state load failed: {e}")
+    return {}
+
+# =================== EXCHANGE SETUP ===================
+def make_ex():
+    exchange_config = {
+        "apiKey": API_KEY,
+        "secret": API_SECRET,
+        "enableRateLimit": True,
+        "timeout": 20000,
+    }
+    
+    if EXCHANGE_NAME == "bybit":
+        exchange_config["options"] = {"defaultType": "swap"}
+        return ccxt.bybit(exchange_config)
+    else:
+        exchange_config["options"] = {"defaultType": "swap"}
+        return ccxt.bingx(exchange_config)
+
+ex = make_ex()
+
+# =================== MARKET SPECS ===================
+MARKET = {}
+AMT_PREC = 0
+LOT_STEP = None
+LOT_MIN  = None
+
+def load_market_specs():
+    global MARKET, AMT_PREC, LOT_STEP, LOT_MIN
+    try:
+        ex.load_markets()
+        MARKET = ex.markets.get(SYMBOL, {})
+        AMT_PREC = int((MARKET.get("precision", {}) or {}).get("amount", 0) or 0)
+        LOT_STEP = (MARKET.get("limits", {}) or {}).get("amount", {}).get("step", None)
+        LOT_MIN  = (MARKET.get("limits", {}) or {}).get("amount", {}).get("min",  None)
+        log_i(f"🎯 {SYMBOL} specs → precision={AMT_PREC}, step={LOT_STEP}, min={LOT_MIN}")
+    except Exception as e:
+        log_w(f"load_market_specs: {e}")
+
+def exchange_specific_params(side, is_close=False):
+    if EXCHANGE_NAME == "bybit":
+        if POSITION_MODE == "hedge":
+            return {"positionSide": "Long" if side == "buy" else "Short", "reduceOnly": is_close}
+        return {"positionSide": "Both", "reduceOnly": is_close}
+    else:
+        if POSITION_MODE == "hedge":
+            return {"positionSide": "LONG" if side == "buy" else "SHORT", "reduceOnly": is_close}
+        return {"positionSide": "BOTH", "reduceOnly": is_close}
+
+def exchange_set_leverage(exchange, leverage, symbol):
+    try:
+        if EXCHANGE_NAME == "bybit":
+            exchange.set_leverage(leverage, symbol)
+        else:
+            exchange.set_leverage(leverage, symbol, params={"side": "BOTH"})
+        log_g(f"✅ {EXCHANGE_NAME.upper()} leverage set: {leverage}x")
+    except Exception as e:
+        log_w(f"⚠️ set_leverage warning: {e}")
+
+def ensure_leverage_mode():
+    try:
+        exchange_set_leverage(ex, LEVERAGE, SYMBOL)
+        log_i(f"📊 {EXCHANGE_NAME.upper()} position mode: {POSITION_MODE}")
+    except Exception as e:
+        log_w(f"ensure_leverage_mode: {e}")
+
+try:
+    load_market_specs()
+    ensure_leverage_mode()
+except Exception as e:
+    log_w(f"exchange init: {e}")
 
 # =================== ULTRA ENHANCED INDICATORS ===================
 def super_trend(df, period=10, multiplier=3):
@@ -443,300 +549,6 @@ def multi_timeframe_analysis(df_dict):
         "bear_count": bear_count
     }
 
-# =================== ULTRA INTELLIGENT COUNCIL SYSTEM ===================
-def ultra_intelligent_council(df, mtf_data=None):
-    """مجلس التداول الذكي الخارق"""
-    try:
-        # جمع جميع المؤشرات المتقدمة
-        super_trend_data = super_trend(df)
-        ichimoku_data = ichimoku_cloud(df)
-        bollinger_data = bollinger_bands_advanced(df)
-        macd_data = volume_weighted_macd(df)
-        stoch_data = stochastic_rsi_advanced(df)
-        structure_data = market_structure_break_advanced(df)
-        money_flow_data = smart_money_flow(df)
-        
-        # المؤشرات الأساسية
-        ind = compute_indicators(df)
-        rsi_ctx = rsi_ma_context(df)
-        gz = golden_zone_check(df, ind)
-        cd = compute_candles(df)
-        
-        votes_buy = 0
-        votes_sell = 0
-        score_buy = 0.0
-        score_sell = 0.0
-        council_logs = []
-        confirmation_signals = []
-        
-        # === SUPER TREND VOTE ===
-        if super_trend_data["signal"] == "buy":
-            votes_buy += 2
-            score_buy += super_trend_data["strength"] * 2
-            council_logs.append(f"🚀 SuperTrend صاعد (قوة: {super_trend_data['strength']:.2f})")
-            confirmation_signals.append("SuperTrend")
-        
-        if super_trend_data["signal"] == "sell":
-            votes_sell += 2
-            score_sell += super_trend_data["strength"] * 2
-            council_logs.append(f"💥 SuperTrend هابط (قوة: {super_trend_data['strength']:.2f})")
-            confirmation_signals.append("SuperTrend")
-        
-        # === ICHIMOKU CLOUD VOTE ===
-        if ichimoku_data["signal"] == "buy":
-            votes_buy += 2
-            score_buy += ichimoku_data["strength"] * 1.5
-            council_logs.append(f"☁️ Ichimoku إيجابي (قوة: {ichimoku_data['strength']:.2f}%)")
-            confirmation_signals.append("Ichimoku")
-        
-        if ichimoku_data["signal"] == "sell":
-            votes_sell += 2
-            score_sell += ichimoku_data["strength"] * 1.5
-            council_logs.append(f"☁️ Ichimoku سلبي (قوة: {ichimoku_data['strength']:.2f}%)")
-            confirmation_signals.append("Ichimoku")
-        
-        # === BOLLINGER BANDS VOTE ===
-        if bollinger_data["signal"] == "buy" and not bollinger_data["squeeze"]:
-            votes_buy += 2
-            score_buy += bollinger_data["strength"] * 2
-            council_logs.append(f"📊 Bollinger شراء من المنطقة السفلية")
-            confirmation_signals.append("Bollinger")
-        
-        if bollinger_data["signal"] == "sell" and not bollinger_data["squeeze"]:
-            votes_sell += 2
-            score_sell += bollinger_data["strength"] * 2
-            council_logs.append(f"📊 Bollinger بيع من المنطقة العلوية")
-            confirmation_signals.append("Bollinger")
-        
-        # === MACD VOTE ===
-        if macd_data["signal"] == "buy":
-            votes_buy += 2
-            score_buy += macd_data["strength"] * 1.5
-            council_logs.append(f"📈 MACD إيجابي (تقاطع صاعد)")
-            confirmation_signals.append("MACD")
-        
-        if macd_data["signal"] == "sell":
-            votes_sell += 2
-            score_sell += macd_data["strength"] * 1.5
-            council_logs.append(f"📉 MACD سلبي (تقاطع هابط)")
-            confirmation_signals.append("MACD")
-        
-        # === STOCHASTIC RSI VOTE ===
-        if stoch_data["signal"] == "buy":
-            votes_buy += 1
-            score_buy += stoch_data["strength"] * 1.2
-            council_logs.append(f"🎯 Stoch RSI من منطقة التشبع بيع")
-            confirmation_signals.append("StochRSI")
-        
-        if stoch_data["signal"] == "sell":
-            votes_sell += 1
-            score_sell += stoch_data["strength"] * 1.2
-            council_logs.append(f"🎯 Stoch RSI من منطقة التشبع شراء")
-            confirmation_signals.append("StochRSI")
-        
-        # === MARKET STRUCTURE VOTE ===
-        if structure_data["signal"] == "strong_buy":
-            votes_buy += 3
-            score_buy += structure_data["strength"] * 0.5
-            council_logs.append(f"🔄 كسر مقاومة قوي ({structure_data['strength']:.2f}%)")
-            confirmation_signals.append("Structure")
-        
-        if structure_data["signal"] == "strong_sell":
-            votes_sell += 3
-            score_sell += structure_data["strength"] * 0.5
-            council_logs.append(f"🔄 كسر دعم قوي ({structure_data['strength']:.2f}%)")
-            confirmation_signals.append("Structure")
-        
-        # === SMART MONEY FLOW VOTE ===
-        if money_flow_data["smart_money_bullish"]:
-            votes_buy += 2
-            score_buy += money_flow_data["strength"] * 1.8
-            council_logs.append("💰 الأموال الذكية تشتري")
-            confirmation_signals.append("SmartMoney")
-        
-        if money_flow_data["smart_money_bearish"]:
-            votes_sell += 2
-            score_sell += money_flow_data["strength"] * 1.8
-            council_logs.append("💰 الأموال الذكية تبيع")
-            confirmation_signals.append("SmartMoney")
-        
-        # === MULTI-TIMEFRAME CONFIRMATION ===
-        if mtf_data and mtf_data["overall_signal"] == "bullish":
-            votes_buy += 2
-            score_buy += mtf_data["confidence"] * 2
-            council_logs.append(f"⏰ تأكيد متعدد الأطر ({mtf_data['bull_count']}/{len(mtf_data['signals'])})")
-            confirmation_signals.append("MultiTF")
-        
-        if mtf_data and mtf_data["overall_signal"] == "bearish":
-            votes_sell += 2
-            score_sell += mtf_data["confidence"] * 2
-            council_logs.append(f"⏰ تأكيد متعدد الأطر ({mtf_data['bear_count']}/{len(mtf_data['signals'])})")
-            confirmation_signals.append("MultiTF")
-        
-        # === TREND STRENGTH BOOST ===
-        if ind["adx"] > TREND_STRENGTH_THRESHOLD:
-            if votes_buy > votes_sell:
-                score_buy *= 1.3
-                council_logs.append(f"🔥 تعزيز قوة الترند الصاعد (ADX: {ind['adx']:.1f})")
-            elif votes_sell > votes_buy:
-                score_sell *= 1.3
-                council_logs.append(f"🔥 تعزيز قوة الترند الهابط (ADX: {ind['adx']:.1f})")
-        
-        # === VOLUME CONFIRMATION BOOST ===
-        current_volume = float(df['volume'].iloc[-1])
-        avg_volume = float(df['volume'].tail(20).mean())
-        if current_volume > avg_volume * VOLUME_CONFIRMATION_THRESHOLD:
-            if votes_buy > votes_sell:
-                score_buy *= 1.2
-                council_logs.append("📈 حجم تداول عالي يدعم الشراء")
-            elif votes_sell > votes_buy:
-                score_sell *= 1.2
-                council_logs.append("📉 حجم تداول عالي يدعم البيع")
-        
-        # === GOLDEN ZONE ULTRA BOOST ===
-        if gz and gz.get("ok") and gz.get("score", 0) >= GOLDEN_ENTRY_SCORE:
-            if gz['zone']['type'] == 'golden_bottom':
-                votes_buy += 3
-                score_buy += 2.5
-                council_logs.append(f"🏆 قاع ذهبي فائق (قوة: {gz['score']:.1f})")
-                confirmation_signals.append("GoldenZone")
-            elif gz['zone']['type'] == 'golden_top':
-                votes_sell += 3
-                score_sell += 2.5
-                council_logs.append(f"🏆 قمة ذهبية فائقة (قوة: {gz['score']:.1f})")
-                confirmation_signals.append("GoldenZone")
-        
-        return {
-            "votes_buy": votes_buy,
-            "votes_sell": votes_sell,
-            "score_buy": round(score_buy, 2),
-            "score_sell": round(score_sell, 2),
-            "logs": council_logs,
-            "confirmation_signals": confirmation_signals,
-            "indicators": {
-                "super_trend": super_trend_data,
-                "ichimoku": ichimoku_data,
-                "bollinger": bollinger_data,
-                "macd": macd_data,
-                "stoch_rsi": stoch_data,
-                "market_structure": structure_data,
-                "money_flow": money_flow_data,
-                "basic": ind,
-                "rsi_context": rsi_ctx,
-                "golden_zone": gz,
-                "candles": cd
-            },
-            "mtf_analysis": mtf_data
-        }
-        
-    except Exception as e:
-        print(f"❌ مجلس الذكاء الخارق خطأ: {e}")
-        return {
-            "votes_buy": 0,
-            "votes_sell": 0, 
-            "score_buy": 0,
-            "score_sell": 0,
-            "logs": [],
-            "confirmation_signals": [],
-            "indicators": {},
-            "mtf_analysis": None
-        }
-
-# =================== PROFESSIONAL LOGGING ===================
-def log_i(msg): print(f"ℹ️ {msg}", flush=True)
-def log_g(msg): print(f"✅ {msg}", flush=True)
-def log_w(msg): print(f"🟨 {msg}", flush=True)
-def log_e(msg): print(f"❌ {msg}", flush=True)
-
-def log_banner(text): print(f"\n{'—'*12} {text} {'—'*12}\n", flush=True)
-
-def save_state(state: dict):
-    try:
-        state["ts"] = int(time.time())
-        with open(STATE_PATH, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-        log_i(f"state saved → {STATE_PATH}")
-    except Exception as e:
-        log_w(f"state save failed: {e}")
-
-def load_state() -> dict:
-    try:
-        if not os.path.exists(STATE_PATH): return {}
-        with open(STATE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        log_w(f"state save failed: {e}")
-    return {}
-
-# =================== EXCHANGE SETUP ===================
-def make_ex():
-    exchange_config = {
-        "apiKey": API_KEY,
-        "secret": API_SECRET,
-        "enableRateLimit": True,
-        "timeout": 20000,
-    }
-    
-    if EXCHANGE_NAME == "bybit":
-        exchange_config["options"] = {"defaultType": "swap"}
-        return ccxt.bybit(exchange_config)
-    else:
-        exchange_config["options"] = {"defaultType": "swap"}
-        return ccxt.bingx(exchange_config)
-
-ex = make_ex()
-
-# =================== MARKET SPECS ===================
-MARKET = {}
-AMT_PREC = 0
-LOT_STEP = None
-LOT_MIN  = None
-
-def load_market_specs():
-    global MARKET, AMT_PREC, LOT_STEP, LOT_MIN
-    try:
-        ex.load_markets()
-        MARKET = ex.markets.get(SYMBOL, {})
-        AMT_PREC = int((MARKET.get("precision", {}) or {}).get("amount", 0) or 0)
-        LOT_STEP = (MARKET.get("limits", {}) or {}).get("amount", {}).get("step", None)
-        LOT_MIN  = (MARKET.get("limits", {}) or {}).get("amount", {}).get("min",  None)
-        log_i(f"🎯 {SYMBOL} specs → precision={AMT_PREC}, step={LOT_STEP}, min={LOT_MIN}")
-    except Exception as e:
-        log_w(f"load_market_specs: {e}")
-
-def exchange_specific_params(side, is_close=False):
-    if EXCHANGE_NAME == "bybit":
-        if POSITION_MODE == "hedge":
-            return {"positionSide": "Long" if side == "buy" else "Short", "reduceOnly": is_close}
-        return {"positionSide": "Both", "reduceOnly": is_close}
-    else:
-        if POSITION_MODE == "hedge":
-            return {"positionSide": "LONG" if side == "buy" else "SHORT", "reduceOnly": is_close}
-        return {"positionSide": "BOTH", "reduceOnly": is_close}
-
-def exchange_set_leverage(exchange, leverage, symbol):
-    try:
-        if EXCHANGE_NAME == "bybit":
-            exchange.set_leverage(leverage, symbol)
-        else:
-            exchange.set_leverage(leverage, symbol, params={"side": "BOTH"})
-        log_g(f"✅ {EXCHANGE_NAME.upper()} leverage set: {leverage}x")
-    except Exception as e:
-        log_w(f"⚠️ set_leverage warning: {e}")
-
-def ensure_leverage_mode():
-    try:
-        exchange_set_leverage(ex, LEVERAGE, SYMBOL)
-        log_i(f"📊 {EXCHANGE_NAME.upper()} position mode: {POSITION_MODE}")
-    except Exception as e:
-        log_w(f"ensure_leverage_mode: {e}")
-
-try:
-    load_market_specs()
-    ensure_leverage_mode()
-except Exception as e:
-    log_w(f"exchange init: {e}")
-
 # =================== CORE FUNCTIONS ===================
 def compute_indicators(df: pd.DataFrame):
     if len(df) < max(ATR_LEN, RSI_LEN, ADX_LEN) + 2:
@@ -1056,6 +868,291 @@ def compute_candles(df):
         "wick_up_big": bool(wick_up_big), "wick_dn_big": bool(wick_dn_big),
         "doji": bool(is_doji), "pattern": ",".join(tags) if tags else None
     }
+
+# =================== ULTRA INTELLIGENT COUNCIL SYSTEM ===================
+def ultra_intelligent_council(df, mtf_data=None):
+    """مجلس التداول الذكي الخارق"""
+    try:
+        # جمع جميع المؤشرات المتقدمة
+        super_trend_data = super_trend(df)
+        ichimoku_data = ichimoku_cloud(df)
+        bollinger_data = bollinger_bands_advanced(df)
+        macd_data = volume_weighted_macd(df)
+        stoch_data = stochastic_rsi_advanced(df)
+        structure_data = market_structure_break_advanced(df)
+        money_flow_data = smart_money_flow(df)
+        
+        # المؤشرات الأساسية
+        ind = compute_indicators(df)
+        rsi_ctx = rsi_ma_context(df)
+        gz = golden_zone_check(df, ind)
+        cd = compute_candles(df)
+        
+        votes_buy = 0
+        votes_sell = 0
+        score_buy = 0.0
+        score_sell = 0.0
+        council_logs = []
+        confirmation_signals = []
+        
+        # === SUPER TREND VOTE ===
+        if super_trend_data["signal"] == "buy":
+            votes_buy += 2
+            score_buy += super_trend_data["strength"] * 2
+            council_logs.append(f"🚀 SuperTrend صاعد (قوة: {super_trend_data['strength']:.2f})")
+            confirmation_signals.append("SuperTrend")
+        
+        if super_trend_data["signal"] == "sell":
+            votes_sell += 2
+            score_sell += super_trend_data["strength"] * 2
+            council_logs.append(f"💥 SuperTrend هابط (قوة: {super_trend_data['strength']:.2f})")
+            confirmation_signals.append("SuperTrend")
+        
+        # === ICHIMOKU CLOUD VOTE ===
+        if ichimoku_data["signal"] == "buy":
+            votes_buy += 2
+            score_buy += ichimoku_data["strength"] * 1.5
+            council_logs.append(f"☁️ Ichimoku إيجابي (قوة: {ichimoku_data['strength']:.2f}%)")
+            confirmation_signals.append("Ichimoku")
+        
+        if ichimoku_data["signal"] == "sell":
+            votes_sell += 2
+            score_sell += ichimoku_data["strength"] * 1.5
+            council_logs.append(f"☁️ Ichimoku سلبي (قوة: {ichimoku_data['strength']:.2f}%)")
+            confirmation_signals.append("Ichimoku")
+        
+        # === BOLLINGER BANDS VOTE ===
+        if bollinger_data["signal"] == "buy" and not bollinger_data["squeeze"]:
+            votes_buy += 2
+            score_buy += bollinger_data["strength"] * 2
+            council_logs.append(f"📊 Bollinger شراء من المنطقة السفلية")
+            confirmation_signals.append("Bollinger")
+        
+        if bollinger_data["signal"] == "sell" and not bollinger_data["squeeze"]:
+            votes_sell += 2
+            score_sell += bollinger_data["strength"] * 2
+            council_logs.append(f"📊 Bollinger بيع من المنطقة العلوية")
+            confirmation_signals.append("Bollinger")
+        
+        # === MACD VOTE ===
+        if macd_data["signal"] == "buy":
+            votes_buy += 2
+            score_buy += macd_data["strength"] * 1.5
+            council_logs.append(f"📈 MACD إيجابي (تقاطع صاعد)")
+            confirmation_signals.append("MACD")
+        
+        if macd_data["signal"] == "sell":
+            votes_sell += 2
+            score_sell += macd_data["strength"] * 1.5
+            council_logs.append(f"📉 MACD سلبي (تقاطع هابط)")
+            confirmation_signals.append("MACD")
+        
+        # === STOCHASTIC RSI VOTE ===
+        if stoch_data["signal"] == "buy":
+            votes_buy += 1
+            score_buy += stoch_data["strength"] * 1.2
+            council_logs.append(f"🎯 Stoch RSI من منطقة التشبع بيع")
+            confirmation_signals.append("StochRSI")
+        
+        if stoch_data["signal"] == "sell":
+            votes_sell += 1
+            score_sell += stoch_data["strength"] * 1.2
+            council_logs.append(f"🎯 Stoch RSI من منطقة التشبع شراء")
+            confirmation_signals.append("StochRSI")
+        
+        # === MARKET STRUCTURE VOTE ===
+        if structure_data["signal"] == "strong_buy":
+            votes_buy += 3
+            score_buy += structure_data["strength"] * 0.5
+            council_logs.append(f"🔄 كسر مقاومة قوي ({structure_data['strength']:.2f}%)")
+            confirmation_signals.append("Structure")
+        
+        if structure_data["signal"] == "strong_sell":
+            votes_sell += 3
+            score_sell += structure_data["strength"] * 0.5
+            council_logs.append(f"🔄 كسر دعم قوي ({structure_data['strength']:.2f}%)")
+            confirmation_signals.append("Structure")
+        
+        # === SMART MONEY FLOW VOTE ===
+        if money_flow_data["smart_money_bullish"]:
+            votes_buy += 2
+            score_buy += money_flow_data["strength"] * 1.8
+            council_logs.append("💰 الأموال الذكية تشتري")
+            confirmation_signals.append("SmartMoney")
+        
+        if money_flow_data["smart_money_bearish"]:
+            votes_sell += 2
+            score_sell += money_flow_data["strength"] * 1.8
+            council_logs.append("💰 الأموال الذكية تبيع")
+            confirmation_signals.append("SmartMoney")
+        
+        # === MULTI-TIMEFRAME CONFIRMATION ===
+        if mtf_data and mtf_data["overall_signal"] == "bullish":
+            votes_buy += 2
+            score_buy += mtf_data["confidence"] * 2
+            council_logs.append(f"⏰ تأكيد متعدد الأطر ({mtf_data['bull_count']}/{len(mtf_data['signals'])})")
+            confirmation_signals.append("MultiTF")
+        
+        if mtf_data and mtf_data["overall_signal"] == "bearish":
+            votes_sell += 2
+            score_sell += mtf_data["confidence"] * 2
+            council_logs.append(f"⏰ تأكيد متعدد الأطر ({mtf_data['bear_count']}/{len(mtf_data['signals'])})")
+            confirmation_signals.append("MultiTF")
+        
+        # === TREND STRENGTH BOOST ===
+        if ind["adx"] > TREND_STRENGTH_THRESHOLD:
+            if votes_buy > votes_sell:
+                score_buy *= 1.3
+                council_logs.append(f"🔥 تعزيز قوة الترند الصاعد (ADX: {ind['adx']:.1f})")
+            elif votes_sell > votes_buy:
+                score_sell *= 1.3
+                council_logs.append(f"🔥 تعزيز قوة الترند الهابط (ADX: {ind['adx']:.1f})")
+        
+        # === VOLUME CONFIRMATION BOOST ===
+        current_volume = float(df['volume'].iloc[-1])
+        avg_volume = float(df['volume'].tail(20).mean())
+        if current_volume > avg_volume * VOLUME_CONFIRMATION_THRESHOLD:
+            if votes_buy > votes_sell:
+                score_buy *= 1.2
+                council_logs.append("📈 حجم تداول عالي يدعم الشراء")
+            elif votes_sell > votes_buy:
+                score_sell *= 1.2
+                council_logs.append("📉 حجم تداول عالي يدعم البيع")
+        
+        # === GOLDEN ZONE ULTRA BOOST ===
+        if gz and gz.get("ok") and gz.get("score", 0) >= GOLDEN_ENTRY_SCORE:
+            if gz['zone']['type'] == 'golden_bottom':
+                votes_buy += 3
+                score_buy += 2.5
+                council_logs.append(f"🏆 قاع ذهبي فائق (قوة: {gz['score']:.1f})")
+                confirmation_signals.append("GoldenZone")
+            elif gz['zone']['type'] == 'golden_top':
+                votes_sell += 3
+                score_sell += 2.5
+                council_logs.append(f"🏆 قمة ذهبية فائقة (قوة: {gz['score']:.1f})")
+                confirmation_signals.append("GoldenZone")
+        
+        return {
+            "votes_buy": votes_buy,
+            "votes_sell": votes_sell,
+            "score_buy": round(score_buy, 2),
+            "score_sell": round(score_sell, 2),
+            "logs": council_logs,
+            "confirmation_signals": confirmation_signals,
+            "indicators": {
+                "super_trend": super_trend_data,
+                "ichimoku": ichimoku_data,
+                "bollinger": bollinger_data,
+                "macd": macd_data,
+                "stoch_rsi": stoch_data,
+                "market_structure": structure_data,
+                "money_flow": money_flow_data,
+                "basic": ind,
+                "rsi_context": rsi_ctx,
+                "golden_zone": gz,
+                "candles": cd
+            },
+            "mtf_analysis": mtf_data
+        }
+        
+    except Exception as e:
+        print(f"❌ مجلس الذكاء الخارق خطأ: {e}")
+        return {
+            "votes_buy": 0,
+            "votes_sell": 0, 
+            "score_buy": 0,
+            "score_sell": 0,
+            "logs": [],
+            "confirmation_signals": [],
+            "indicators": {},
+            "mtf_analysis": None
+        }
+
+# =================== MEDIUM LOG PANEL ===================
+def render_medium_log(council_data):
+    """لوحة متوسطة تعرض حالة التداول الكاملة"""
+    try:
+        ind = council_data.get("indicators", {})
+        basic = ind.get("basic", {})
+        stx = ind.get("super_trend", {})
+        ich = ind.get("ichimoku", {})
+        bb = ind.get("bollinger", {})
+        macd = ind.get("macd", {})
+        stoch = ind.get("stoch_rsi", {})
+        mstr = ind.get("market_structure", {})
+        mny = ind.get("money_flow", {})
+        gz = ind.get("golden_zone", {})
+        mtf = council_data.get("mtf_analysis", {}) or {}
+
+        # إشارة المجلس الإجمالية
+        council_sig = "BUY" if council_data.get("score_buy",0) > council_data.get("score_sell",0) else ("SELL" if council_data.get("score_sell",0) > council_data.get("score_buy",0) else "NEUTRAL")
+        votes = f"{council_data.get('votes_buy',0)}/{council_data.get('votes_sell',0)}"
+        scores = f"{council_data.get('score_buy',0):.1f}/{council_data.get('score_sell',0):.1f}"
+        confirms = len(council_data.get("confirmation_signals", []))
+
+        # مؤشرات أساسية
+        adx = basic.get("adx", 0.0)
+        rsi = basic.get("rsi", 50.0)
+        di_plus = basic.get("plus_di", 0.0)
+        di_minus = basic.get("minus_di", 0.0)
+        atr = basic.get("atr", 0.0)
+
+        # مؤشرات متقدمة
+        st_sig = stx.get("signal","-"); st_strength = stx.get("strength",0)
+        ich_sig = ich.get("signal","-"); ich_strength = ich.get("strength",0)
+        bb_sig = bb.get("signal","-"); bb_pctB = bb.get("percent_b",0); bb_sq = bb.get("squeeze", False)
+        macd_sig = macd.get("signal","-"); macd_hist = macd.get("histogram",0)
+        stoch_sig = stoch.get("signal","-"); stoch_k = stoch.get("k",0); stoch_d = stoch.get("d",0)
+        ms_sig = mstr.get("signal","-"); ms_str = mstr.get("strength",0)
+        sm_bull = mny.get("smart_money_bullish", False); sm_bear = mny.get("smart_money_bearish", False)
+        
+        # Golden Zone
+        gz_ok = gz.get("ok", False) if gz else False
+        gz_score = gz.get("score", 0) if gz else 0
+        gz_type = gz.get("zone", {}).get("type", "-") if gz and gz.get("zone") else "-"
+
+        # تأكيد متعدد الأطر
+        mtf_sig = mtf.get("overall_signal","-")
+        mtf_det = f"{mtf.get('bull_count',0)}/{mtf.get('bear_count',0)}"
+        mtf_conf = mtf.get("confidence", 0)
+
+        # حالة الصفقة
+        if STATE.get("open"):
+            side = STATE.get("side","-"); pnl = STATE.get("pnl",0.0)
+            mode = STATE.get("mode","-"); achieved = STATE.get("profit_targets_achieved",0)
+            entry = STATE.get("entry", 0.0)
+            current_price = price_now() or entry
+            if entry and current_price:
+                price_diff = ((current_price - entry) / entry * 100) * (1 if side == "long" else -1)
+                print(f"\n🎯 MODE={mode.upper()} | POS={side.upper()} | PnL={pnl:.2f}% | TP_hits={achieved}", flush=True)
+                print(f"   📊 Entry: {entry:.6f} | Current: {current_price:.6f} | Diff: {price_diff:.2f}%", flush=True)
+            else:
+                print(f"\n🎯 MODE={mode.upper()} | POS={side.upper()} | PnL={pnl:.2f}% | TP_hits={achieved}", flush=True)
+        else:
+            print(f"\n⚪ NO OPEN POSITIONS | Waiting: {wait_for_next_signal_side}", flush=True)
+
+        # إجمالي الأرباح
+        if compound_pnl != 0:
+            print(f"💰 TOTAL PNL: {compound_pnl:.4f} USDT", flush=True)
+
+        # بانِل مختصرة — مؤشرات + إستراتيجيات
+        print("─" * 80, flush=True)
+        print(f"🧠 ULTRA COUNCIL: {council_sig} | Votes: {votes} | Scores: {scores} | Confirms: {confirms}/7", flush=True)
+        print(f"📊 CORE: ADX={adx:.1f} | +DI={di_plus:.1f} / -DI={di_minus:.1f} | RSI={rsi:.1f} | ATR={atr:.6f}", flush=True)
+        print(f"🎯 TREND: ST={st_sig}({st_strength:.2f}) | ICH={ich_sig}({ich_strength:.1f}%) | MTF={mtf_sig}({mtf_det})", flush=True)
+        print(f"📈 MOMENTUM: MACD={macd_sig}({macd_hist:.4f}) | Stoch={stoch_sig}(K={stoch_k:.1f}/D={stoch_d:.1f})", flush=True)
+        print(f"📊 VOLATILITY: BB={bb_sig}(%B={bb_pctB:.2f}) | Squeeze={bb_sq} | Structure={ms_sig}({ms_str:.2f}%)", flush=True)
+        print(f"💰 SMART MONEY: Bull={sm_bull} | Bear={sm_bear} | GZ={gz_type}({gz_score:.1f})", flush=True)
+        
+        # عرض أهم إشارات التأكيد
+        conf_signals = council_data.get("confirmation_signals", [])
+        if conf_signals:
+            print(f"✅ CONFIRMATIONS: {', '.join(conf_signals[:5])}", flush=True)
+        
+        print("─" * 80, flush=True)
+
+    except Exception as e:
+        log_w(f"render_medium_log error: {e}")
 
 # =================== EXECUTION SYSTEM ===================
 STATE = {
@@ -1442,6 +1539,10 @@ def ultra_trading_loop():
             # مجلس الذكاء الخارق
             council_data = ultra_intelligent_council(df, mtf_data)
             
+            # عرض اللوج المتوسط
+            if LOG_MEDIUM_PANEL:
+                render_medium_log(council_data)
+            
             # تحديث حالة المركز
             if STATE["open"] and px:
                 STATE["pnl"] = (px-STATE["entry"])*STATE["qty"] if STATE["side"]=="long" else (STATE["entry"]-px)*STATE["qty"]
@@ -1465,22 +1566,6 @@ def ultra_trading_loop():
                             log_i(f"   ✅ التأكيدات: {len(council_data['confirmation_signals'])}")
                             for log_msg in council_data.get("logs", []):
                                 log_i(f"   - {log_msg}")
-            
-            # تحديث واجهة المستخدم
-            if LOG_ADDONS:
-                print(f"\n🧠 ULTRA COUNCIL SNAPSHOT:", flush=True)
-                print(f"   📈 الإشارة: {'شراء' if council_data['score_buy'] > council_data['score_sell'] else 'بيع' if council_data['score_sell'] > council_data['score_buy'] else 'محايد'}", flush=True)
-                print(f"   💪 القوة: {council_data['score_buy']:.1f} / {council_data['score_sell']:.1f}", flush=True)
-                print(f"   ✅ التأكيدات: {len(council_data['confirmation_signals'])}", flush=True)
-                print(f"   📊 المؤشرات: SuperTrend, Ichimoku, Bollinger, MACD, StochRSI, SmartMoney", flush=True)
-                
-                if STATE["open"]:
-                    print(f"   🎯 المركز: {STATE['side']} | الربح: {STATE['pnl']:.2f}%", flush=True)
-                else:
-                    print(f"   ⚪ لا توجد صفقات مفتوحة", flush=True)
-                
-                if compound_pnl != 0:
-                    print(f"   💰 إجمالي الأرباح: {compound_pnl:.4f} USDT", flush=True)
             
             loop_i += 1
             time.sleep(5)
