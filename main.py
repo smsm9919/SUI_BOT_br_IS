@@ -1069,88 +1069,68 @@ def ultra_intelligent_council(df, mtf_data=None):
             "mtf_analysis": None
         }
 
-# =================== MEDIUM LOG PANEL ===================
+# =================== ENHANCED MEDIUM LOG PANEL ===================
 def render_medium_log(council_data):
-    """لوحة متوسطة محسنة تعرض الرصيد والربح التراكمي"""
     try:
-        # رصيد المحفظة + الربح التراكمي
-        bal = balance_usdt()
-        print(f"💼 BALANCE: {bal:.2f if bal is not None else 'N/A'} USDT | "
-              f"📦 COMPOUND PNL: {compound_pnl:+.4f} USDT", flush=True)
-
-        ind = council_data.get("indicators", {})
+        ind   = council_data.get("indicators", {})
         basic = ind.get("basic", {})
-        stx = ind.get("super_trend", {})
-        ich = ind.get("ichimoku", {})
-        bb = ind.get("bollinger", {})
-        macd = ind.get("macd", {})
+        stx   = ind.get("super_trend", {})
+        ich   = ind.get("ichimoku", {})
+        bb    = ind.get("bollinger", {})
+        macd  = ind.get("macd", {})
         stoch = ind.get("stoch_rsi", {})
-        mstr = ind.get("market_structure", {})
-        mny = ind.get("money_flow", {})
-        gz = ind.get("golden_zone", {})
-        mtf = council_data.get("mtf_analysis", {}) or {}
+        mstr  = ind.get("market_structure", {})
+        mny   = ind.get("money_flow", {})
+        mtf   = council_data.get("mtf_analysis", {}) or {}
 
-        # إشارة المجلس الإجمالية
-        council_sig = "BUY" if council_data.get("score_buy",0) > council_data.get("score_sell",0) else ("SELL" if council_data.get("score_sell",0) > council_data.get("score_buy",0) else "NEUTRAL")
+        # إشارة/تصويت/سكور المجلس
+        score_buy  = float(council_data.get("score_buy", 0.0))
+        score_sell = float(council_data.get("score_sell", 0.0))
+        council_sig = "BUY" if score_buy > score_sell else ("SELL" if score_sell > score_buy else "NEUTRAL")
         votes = f"{council_data.get('votes_buy',0)}/{council_data.get('votes_sell',0)}"
-        scores = f"{council_data.get('score_buy',0):.1f}/{council_data.get('score_sell',0):.1f}"
+        scores = f"{score_buy:.1f}/{score_sell:.1f}"
         confirms = len(council_data.get("confirmation_signals", []))
 
         # مؤشرات أساسية
-        adx = basic.get("adx", 0.0)
-        rsi = basic.get("rsi", 50.0)
-        di_plus = basic.get("plus_di", 0.0)
-        di_minus = basic.get("minus_di", 0.0)
-        atr = basic.get("atr", 0.0)
+        adx = float(basic.get("adx", 0.0))
+        rsi = float(basic.get("rsi", 50.0))
+        di_plus  = float(basic.get("plus_di", 0.0))
+        di_minus = float(basic.get("minus_di", 0.0))
 
-        # مؤشرات متقدمة
-        st_sig = stx.get("signal","-"); st_strength = stx.get("strength",0)
-        ich_sig = ich.get("signal","-"); ich_strength = ich.get("strength",0)
-        bb_sig = bb.get("signal","-"); bb_pctB = bb.get("percent_b",0); bb_sq = bb.get("squeeze", False)
-        macd_sig = macd.get("signal","-"); macd_hist = macd.get("histogram",0)
-        stoch_sig = stoch.get("signal","-"); stoch_k = stoch.get("k",0); stoch_d = stoch.get("d",0)
-        ms_sig = mstr.get("signal","-"); ms_str = mstr.get("strength",0)
-        sm_bull = mny.get("smart_money_bullish", False); sm_bear = mny.get("smart_money_bearish", False)
-        
-        # Golden Zone
-        gz_ok = gz.get("ok", False) if gz else False
-        gz_score = gz.get("score", 0) if gz else 0
-        gz_type = gz.get("zone", {}).get("type", "-") if gz and gz.get("zone") else "-"
+        # SuperTrend / Ichimoku / Bollinger / MACD / Stoch RSI / Market Structure / Smart Money
+        st_sig = stx.get("signal","-");        st_strength = float(stx.get("strength",0) or 0)
+        ich_sig = ich.get("signal","-");       ich_strength = float(ich.get("strength",0) or 0)
+        bb_sig = bb.get("signal","-");         bb_pctB = float(bb.get("percent_b",0) or 0); bb_sq = bool(bb.get("squeeze", False))
+        macd_sig = macd.get("signal","-");     macd_hist = float(macd.get("histogram",0) or 0)
+        stoch_sig = stoch.get("signal","-");   stoch_k = float(stoch.get("k",0) or 0); stoch_d = float(stoch.get("d",0) or 0)
+        ms_sig = mstr.get("signal","-");       ms_str = float(mstr.get("strength",0) or 0)
+        sm_bull = bool(mny.get("smart_money_bullish", False)); 
+        sm_bear = bool(mny.get("smart_money_bearish", False))
 
-        # تأكيد متعدد الأطر
-        mtf_sig = mtf.get("overall_signal","-")
-        mtf_det = f"{mtf.get('bull_count',0)}/{mtf.get('bear_count',0)}"
-        mtf_conf = mtf.get("confidence", 0)
+        # رصيد + ربح تراكمي (تصحيح صيغة الـ f-string)
+        bal = balance_usdt()
+        bal_fmt = f"{bal:.2f}" if (bal is not None) else "N/A"
+        print(f"💼 BALANCE: {bal_fmt} USDT | 📦 COMPOUND PNL: {compound_pnl:+.4f} USDT", flush=True)
 
         # حالة الصفقة
         if STATE.get("open"):
-            side = STATE.get("side","-"); pnl = STATE.get("pnl",0.0)
-            mode = STATE.get("mode","-"); achieved = STATE.get("profit_targets_achieved",0)
-            entry = STATE.get("entry", 0.0)
-            current_price = price_now() or entry
-            if entry and current_price:
-                price_diff = ((current_price - entry) / entry * 100) * (1 if side == "long" else -1)
-                print(f"🧭 MODE={mode.upper()} | POS={side.upper()} | PnL={pnl:.2f}% | TP_hits={achieved} | entry={entry:.6f}", flush=True)
-            else:
-                print(f"🧭 MODE={mode.upper()} | POS={side.upper()} | PnL={pnl:.2f}% | TP_hits={achieved}", flush=True)
+            side = STATE.get("side","-"); pnl = float(STATE.get("pnl",0.0))
+            mode = STATE.get("mode","-"); achieved = int(STATE.get("profit_targets_achieved",0))
+            entry = STATE.get("entry", None)
+            entry_fmt = f"{entry:.6f}" if isinstance(entry,(int,float)) else str(entry)
+            print(f"🧭 MODE={mode.upper()} | POS={side.upper()} | PnL={pnl:.2f}% | TP_hits={achieved} | entry={entry_fmt}", flush=True)
         else:
-            print(f"⚪ NO OPEN POSITIONS | Waiting: {wait_for_next_signal_side}", flush=True)
+            print(f"⚪ لا توجد صفقات مفتوحة | waiting_for={wait_for_next_signal_side}", flush=True)
 
         # بانِل مختصرة — مؤشرات + إستراتيجيات
-        print("─" * 80, flush=True)
-        print(f"🧠 ULTRA COUNCIL: {council_sig} | Votes: {votes} | Scores: {scores} | Confirms: {confirms}/7", flush=True)
-        print(f"📊 CORE: ADX={adx:.1f} | +DI={di_plus:.1f} / -DI={di_minus:.1f} | RSI={rsi:.1f} | ATR={atr:.6f}", flush=True)
-        print(f"🎯 TREND: ST={st_sig}({st_strength:.2f}) | ICH={ich_sig}({ich_strength:.1f}%) | MTF={mtf_sig}({mtf_det})", flush=True)
-        print(f"📈 MOMENTUM: MACD={macd_sig}({macd_hist:.4f}) | Stoch={stoch_sig}(K={stoch_k:.1f}/D={stoch_d:.1f})", flush=True)
-        print(f"📊 VOLATILITY: BB={bb_sig}(%B={bb_pctB:.2f}) | Squeeze={bb_sq} | Structure={ms_sig}({ms_str:.2f}%)", flush=True)
-        print(f"💰 SMART MONEY: Bull={sm_bull} | Bear={sm_bear} | GZ={gz_type}({gz_score:.1f})", flush=True)
-        
-        # عرض أهم إشارات التأكيد
-        conf_signals = council_data.get("confirmation_signals", [])
-        if conf_signals:
-            print(f"✅ CONFIRMATIONS: {', '.join(conf_signals[:5])}", flush=True)
-        
-        print("─" * 80, flush=True)
+        print("—"*70, flush=True)
+        print(f"🧠 COUNCIL: sig={council_sig} | votes={votes} | scores={scores} | confirms={confirms}", flush=True)
+        print(f"📊 ADX/DI: ADX={adx:.1f} | +DI={di_plus:.1f} / -DI={di_minus:.1f} | RSI={rsi:.1f}", flush=True)
+        print(f"🟢 ST: {st_sig} (str={st_strength:.2f}) | ☁️ Ichi: {ich_sig} (str={ich_strength:.2f}) | 🎯 MTF: {mtf.get('overall_signal','-')} ({mtf.get('bull_count',0)}/{mtf.get('bear_count',0)})", flush=True)
+        print(f"📈 MACD: {macd_sig} (hist={macd_hist:.4f}) | 🔁 StochRSI: {stoch_sig} (K={stoch_k:.1f}/D={stoch_d:.1f})", flush=True)
+        print(f"📎 BB: {bb_sig} (%B={bb_pctB:.2f}, squeeze={bb_sq}) | 🧱 Struct: {ms_sig} ({ms_str:.2f}%)", flush=True)
+        print(f"💰 SmartMoney: bull={sm_bull} bear={sm_bear} | 💬 logs={len(council_data.get('logs',[]))}", flush=True)
+        print("—"*70, flush=True)
 
     except Exception as e:
         log_w(f"render_medium_log error: {e}")
@@ -1311,13 +1291,24 @@ def smart_entry_system(council_data):
     return None
 
 def execute_trade_decision(side, price, qty, council_data):
+    """نسخة محسنة من دالة تنفيذ الصفقات مع تحقق إضافي"""
+    
+    # تحقق مكثف من المدخلات قبل التنفيذ
+    if not isinstance(qty, (int, float)) or qty <= 0:
+        log_e("❌ كمية غير صالحة للتنفيذ")
+        return False
+        
+    if price is None or price <= 0:
+        log_e("❌ لا يمكن قراءة السعر الحالي")
+        return False
+        
+    if side not in ["buy", "sell"]:
+        log_e(f"❌ اتجاه غير صالح: {side}")
+        return False
+
     if not EXECUTE_ORDERS or DRY_RUN:
         log_i(f"DRY_RUN: {side} {qty:.4f} @ {price:.6f}")
         return True
-    
-    if qty <= 0:
-        log_e("❌ كمية غير صالحة للتنفيذ")
-        return False
 
     print(f"🎯 EXECUTE ULTRA: {side.upper()} {qty:.4f} @ {price:.6f} | "
           f"score={council_data['score_buy']:.1f}/{council_data['score_sell']:.1f} | "
@@ -1325,12 +1316,37 @@ def execute_trade_decision(side, price, qty, council_data):
 
     try:
         if MODE_LIVE:
+            # ضمان ضبط الرافعة المالية
             exchange_set_leverage(ex, LEVERAGE, SYMBOL)
+            
+            # معالجة خاصة لنقص الهامش
             params = exchange_specific_params(side, is_close=False)
-            ex.create_order(SYMBOL, "market", side, qty, None, params)
-        
-        log_g(f"✅ EXECUTED ULTRA: {side.upper()} {qty:.4f} @ {price:.6f}")
-        return True
+            
+            try:
+                ex.create_order(SYMBOL, "market", side, qty, None, params)
+                log_g(f"✅ EXECUTED ULTRA: {side.upper()} {qty:.4f} @ {price:.6f}")
+                return True
+                
+            except ccxt.InsufficientFunds as e:
+                log_w("⚠️ الهامش غير كافٍ — سيتم تقليل الحجم 20% وإعادة المحاولة")
+                # إعادة حساب الكمية مع تقليل 20%
+                reduced_qty = safe_qty(qty * 0.8)
+                if reduced_qty > 0:
+                    ex.create_order(SYMBOL, "market", side, reduced_qty, None, params)
+                    log_g(f"✅ EXECUTED ULTRA (REDUCED): {side.upper()} {reduced_qty:.4f} @ {price:.6f}")
+                    return True
+                else:
+                    log_e("❌ فشل التنفيذ حتى بعد تقليل الحجم")
+                    return False
+                    
+            except Exception as e:
+                log_e(f"❌ EXECUTION FAILED: {e}")
+                return False
+        else:
+            # وضع المحاكاة
+            log_g(f"✅ SIMULATED EXECUTION: {side.upper()} {qty:.4f} @ {price:.6f}")
+            return True
+            
     except Exception as e:
         log_e(f"❌ EXECUTION FAILED: {e}")
         return False
