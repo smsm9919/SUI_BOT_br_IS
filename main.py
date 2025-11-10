@@ -93,9 +93,9 @@ MAX_SPREAD_BPS = float(os.getenv("MAX_SPREAD_BPS", 6.0))
 SCALP_TP_TARGETS = [0.45]  # Take profit once at 0.45%
 SCALP_TP_FRACTIONS = [1.0]  # Close 100% at once
 
-# Trend Mode - Ride the trend with multiple takes
-TREND_TP_TARGETS = [0.50, 1.00, 1.80, 2.50]  # Multiple TP levels
-TREND_TP_FRACTIONS = [0.30, 0.30, 0.20, 0.20]  # Scale out gradually
+# Trend Mode - Ride the trend with 2-3 takes based on strength
+TREND_TP_TARGETS = [0.50, 1.20, 2.00]  # 3 TP levels for strong trends
+TREND_TP_FRACTIONS = [0.40, 0.40, 0.20]  # Scale out gradually
 
 # Dynamic TP / trail
 BREAKEVEN_AFTER    = 0.30
@@ -347,7 +347,7 @@ def verify_execution_environment():
     print(f"⚙️ EXECUTION ENVIRONMENT", flush=True)
     print(f"🔧 EXCHANGE: {EXCHANGE_NAME.upper()} | SYMBOL: {SYMBOL}", flush=True)
     print(f"🔧 EXECUTE_ORDERS: {EXECUTE_ORDERS} | DRY_RUN: {DRY_RUN}", flush=True)
-    print(f"🎯 SMART PROFIT: Scalp(1-shot) | Trend(Multi-TP)", flush=True)
+    print(f"🎯 SMART PROFIT: Scalp(1-shot) | Trend(3-TP)", flush=True)
     print(f"📈 CANDLES: Full patterns + Wick exhaustion + Golden reversal", flush=True)
     
     if not EXECUTE_ORDERS:
@@ -1042,7 +1042,7 @@ def manage_take_profits(state, current_price, pnl_pct, management_config, mode):
                 state["profit_targets_achieved"] += 1
                 log_i(f"💰 SCALP SUCCESS: Taken {tp_targets[0]}% profit in one shot!")
     
-    # Trend Mode - Multiple take profits
+    # Trend Mode - Multiple take profits (2-3 levels)
     else:
         tp_levels_hit = state.get("tp_levels_hit", [False] * len(tp_targets))
         
@@ -1088,9 +1088,9 @@ def manage_after_entry_enhanced(df, ind, info):
     manage_take_profits(STATE, px, pnl_pct, management, mode)
 
     snap = emit_snapshots(ex, SYMBOL, df)
-    gz = snap["gz"]
+    gz = snap.get("gz", {})  # إصلاح الخطأ - استخدام get بدلاً من []
     
-    exit_signal = smart_exit_guard(STATE, df, ind, snap["flow"], snap["bm"], 
+    exit_signal = smart_exit_guard(STATE, df, ind, snap.get("flow", {}), snap.get("bm", {}), 
                                  px, pnl_pct/100, mode, side, entry, gz)
     
     if exit_signal["log"]:
@@ -1509,7 +1509,7 @@ def open_market_enhanced(side, qty, price):
                                    rsi_ctx=rsi_ma_context(df))
     
     mode = mode_data["mode"]
-    gz = snap["gz"]
+    gz = snap.get("gz", {})  # إصلاح الخطأ
     
     management_config = setup_trade_management(mode)
     
@@ -1771,7 +1771,8 @@ def smart_exit_guard(state, df, ind, flow, bm, now_price, pnl_pct, mode, side, e
                 bps = abs((best_bid - now_price) / now_price) * 10000.0
                 bm_wall_close = (bps <= BM_WALL_PROX_BPS)
 
-    if state.get('tp1_done') and (gz and gz.get('ok')):
+    # إصلاح الخطأ - التحقق من وجود gz أولاً
+    if gz and state.get('tp1_done') and gz.get("ok"):
         opp = (gz['zone']['type']=='golden_top' and side=='long') or (gz['zone']['type']=='golden_bottom' and side=='short')
         if opp and gz.get('score',0) >= GOLDEN_REVERSAL_SCORE:
             return {
@@ -1819,6 +1820,9 @@ def trade_loop_enhanced():
     
     while True:
         try:
+            # تعريف gz بشكل آمن من البداية
+            gz = {}
+            
             bal = balance_usdt()
             px = price_now()
             df = fetch_ohlcv()
@@ -1830,14 +1834,17 @@ def trade_loop_enhanced():
                                 balance_fn=lambda: float(bal) if bal else None,
                                 pnl_fn=lambda: float(compound_pnl))
             
+            # تحديث gz من البيانات الجديدة
+            gz = snap.get("gz", {})
+            
             if STATE["open"] and px:
                 STATE["pnl"] = (px-STATE["entry"])*STATE["qty"] if STATE["side"]=="long" else (STATE["entry"]-px)*STATE["qty"]
             
             if STATE["open"]:
                 manage_after_entry_enhanced(df, ind, {
                     "price": px or info["price"], 
-                    "bm": snap["bm"],
-                    "flow": snap["flow"],
+                    "bm": snap.get("bm", {}),
+                    "flow": snap.get("flow", {}),
                     **info
                 })
             
@@ -1850,7 +1857,8 @@ def trade_loop_enhanced():
             
             sig = smart_entry["entry_signal"]
 
-            if (gz and gz.get("ok") and gz.get("score", 0) >= GOLDEN_ENTRY_SCORE):
+            # إصلاح الخطأ - التحقق من وجود gz أولاً
+            if gz and gz.get("ok") and gz.get("score", 0) >= GOLDEN_ENTRY_SCORE:
                 if gz["zone"]["type"]=="golden_bottom" and smart_entry["confidence_buy"] >= 2:
                     sig = "buy"
                     log_i(f"🎯 GOLDEN ENTRY OVERRIDE: BUY | score={gz['score']:.1f}")
@@ -1979,7 +1987,7 @@ if __name__ == "__main__":
 
     print(colored(f"🎯 EXCHANGE: {EXCHANGE_NAME.upper()} • SYMBOL: {SYMBOL} • TIMEFRAME: {INTERVAL}", "yellow"))
     print(colored(f"⚡ RISK: {int(RISK_ALLOC*100)}% × {LEVERAGE}x • COUNCIL_PRO_ULTRA=ENABLED", "yellow"))
-    print(colored(f"💰 SMART PROFIT: Scalp(1-shot at {SCALP_TP_TARGETS[0]}%) | Trend(Multi-TP: {TREND_TP_TARGETS})", "yellow"))
+    print(colored(f"💰 SMART PROFIT: Scalp(1-shot at {SCALP_TP_TARGETS[0]}%) | Trend(3-TP: {TREND_TP_TARGETS})", "yellow"))
     print(colored(f"🏆 GOLDEN ENTRY: score≥{GOLDEN_ENTRY_SCORE} | ADX≥{GOLDEN_ENTRY_ADX}", "yellow"))
     print(colored(f"🧠 ADVANCED INDICATORS: SuperTrend + Volume Profile + Market Structure", "yellow"))
     print(colored(f"🚀 EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
