@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-SUI ULTRA PRO AI BOT - الإصدار النهائي المتكامل
-• مجلس الإدارة الفائق (Super Council AI) مع 11 استراتيجية متقدمة
-• نظام ركوب الترند الذكي لتحقيق أقصى ربح
-• السكالب الفائق بأهداف متعددة
+SUI ULTRA PRO AI BOT - الإصدار الذكي المتقدم
+• مجلس الإدارة الفائق الذكي مع 13 استراتيجية متقدمة
+• نظام ركوب الترند الذكي لتحقيق أقصى ربح متتالي
+• السكالب الفائق بأهداف متعددة ذكية
 • إدارة صفقات ذكية متكيفة مع قوة الترند
 • Multi-Exchange Support: BingX & Bybit
+• نظام Footprint + Diagonal Order-Flow المتقدم
 """
 
 import os, time, math, random, signal, sys, traceback, logging, json
@@ -46,7 +47,7 @@ SHADOW_MODE_DASHBOARD = False
 DRY_RUN = False
 
 # ==== Addon: Logging + Recovery Settings ====
-BOT_VERSION = f"SUI ULTRA PRO AI v5.0 — {EXCHANGE_NAME.upper()}"
+BOT_VERSION = f"SUI ULTRA PRO AI v6.0 — {EXCHANGE_NAME.upper()}"
 print("🚀 Booting:", BOT_VERSION, flush=True)
 
 STATE_PATH = "./bot_state.json"
@@ -91,8 +92,8 @@ BREAKEVEN_AFTER    = 0.30
 TRAIL_ACTIVATE_PCT = 1.20
 ATR_TRAIL_MULT     = 1.8
 
-TREND_TPS       = [0.50, 1.00, 1.80, 2.50, 3.50]
-TREND_TP_FRACS  = [0.20, 0.20, 0.20, 0.20, 0.20]
+TREND_TPS       = [0.50, 1.00, 1.80, 2.50, 3.50, 5.00, 7.00]
+TREND_TP_FRACS  = [0.15, 0.15, 0.15, 0.15, 0.15, 0.15, 0.10]
 
 # Dust guard
 FINAL_CHUNK_QTY = float(os.getenv("FINAL_CHUNK_QTY", 50.0))
@@ -147,19 +148,19 @@ TREND_TP1 = 1.20
 TREND_BE_AFTER = 0.80
 TREND_ATR_MULT = 1.8
 
-MAX_TRADES_PER_HOUR = 6
-COOLDOWN_SECS_AFTER_CLOSE = 60
+MAX_TRADES_PER_HOUR = 8
+COOLDOWN_SECS_AFTER_CLOSE = 45
 ADX_GATE = 17
 
 # ===== SUPER SCALP ENGINE =====
 SCALP_MODE            = True
 SCALP_EXECUTE         = True
-SCALP_SIZE_FACTOR     = 0.30
+SCALP_SIZE_FACTOR     = 0.35
 SCALP_ADX_GATE        = 12.0
-SCALP_MIN_SCORE       = 3.2
+SCALP_MIN_SCORE       = 3.5
 SCALP_IMB_THRESHOLD   = 1.00
 SCALP_VOL_MA_FACTOR   = 1.20
-SCALP_COOLDOWN_SEC    = 10
+SCALP_COOLDOWN_SEC    = 8
 SCALP_RESPECT_WAIT    = False
 SCALP_TP_SINGLE_PCT   = 0.35
 SCALP_BE_AFTER_PCT    = 0.15
@@ -181,6 +182,8 @@ WEIGHT_FLOW = 1.4
 WEIGHT_GOLDEN = 1.6
 WEIGHT_CANDLES = 1.2
 WEIGHT_MOMENTUM = 1.3
+WEIGHT_FOOTPRINT = 1.5
+WEIGHT_DIAGONAL = 1.4
 
 # ===== INTELLIGENT TREND MANAGEMENT =====
 TREND_RIDING_AI = True
@@ -193,6 +196,23 @@ TREND_FOLLOW_MULTIPLIER = 1.5
 WEAK_TREND_EARLY_EXIT = True
 STRONG_TREND_HOLD = True
 TREND_REENTRY_STRATEGY = True
+
+# ===== FLOW/FOOTPRINT Council Boost =====
+FLOW_IMB_RATIO          = 1.6
+FLOW_STACK_DEPTH        = 4
+FLOW_ABSORB_PCTL        = 0.95
+FLOW_ABSORB_MAX_TICKS   = 2
+FP_WINDOW               = 3
+FP_SCORE_BUY            = (2, 1.0)
+FP_SCORE_SELL           = (2, 1.0)
+FP_SCORE_ABSORB_PENALTY = (-1, -0.5)
+DIAG_SCORE_BUY          = (2, 1.0)
+DIAG_SCORE_SELL         = (2, 1.0)
+
+# ===== PROFIT ACCUMULATION SYSTEM =====
+COMPOUND_PROFIT_REINVEST = True
+PROFIT_REINVEST_RATIO = 0.3  # 30% من الأرباح يعاد استثمارها
+MIN_COMPOUND_BALANCE = 50.0  # الحد الأدنى للرصيد قبل البدء في المراكبة
 
 # ===== SNAPSHOT & MARK SYSTEM =====
 GREEN="🟢"; RED="🔴"
@@ -333,11 +353,36 @@ def _pct(x):
     try: return f"{float(x):.2f}%"
     except: return str(x)
 
+def last_scalar(x, default=0.0):
+    """يرجع float من آخر عنصر; يقبل Series/np.ndarray/list/float."""
+    try:
+        if isinstance(x, pd.Series): return float(x.iloc[-1])
+        if isinstance(x, (list, tuple, np.ndarray)): return float(x[-1])
+        if x is None: return float(default)
+        return float(x)
+    except Exception:
+        return float(default)
+
+def safe_get(ind: dict, key: str, default=0.0):
+    """يقرأ مؤشر من dict ويحوّله scalar أخير."""
+    if ind is None: 
+        return float(default)
+    val = ind.get(key, default)
+    return last_scalar(val, default=default)
+
 def _ind_brief(ind):
     if not ind: return "n/a"
-    return (f"ADX={_fmt(ind.get('adx',0),1)} DI={_fmt(ind.get('di',0),1)} | "
-            f"RSI={_fmt(ind.get('rsi',0),1)}/{_fmt(ind.get('rsi_ma',0),1)} | "
-            f"ATR={_fmt(ind.get('atr',0),4)}")
+    
+    # استخراج قيم scalar بأمان
+    adx = safe_get(ind, 'adx', 0)
+    di_spread = safe_get(ind, 'di_spread', 0)
+    rsi = safe_get(ind, 'rsi', 0)
+    rsi_ma = safe_get(ind, 'rsi_ma', 0)
+    atr = safe_get(ind, 'atr', 0)
+    
+    return (f"ADX={adx:.1f} DI={di_spread:.1f} | "
+            f"RSI={rsi:.1f}/{rsi_ma:.1f} | "
+            f"ATR={atr:.4f}")
 
 def _council_brief(c):
     if not c: return "n/a"
@@ -512,6 +557,101 @@ def compute_flow_metrics(df):
     except Exception as e:
         return {"ok": False, "why": str(e)}
 
+# =================== FOOTPRINT & DIAGONAL FLOW SYSTEMS ===================
+def analyze_footprint_fallback(df: pd.DataFrame, window: int = FP_WINDOW):
+    """
+    نسخة بديلة تعتمد على علاقة الحجم بالسعر عندما لا تتوفر بيانات Footprint مباشرة
+    """
+    try:
+        sub = df.tail(window)
+        votes_b = votes_s = 0
+        score_b = score_s = 0.0
+        tag = "balanced"
+
+        for _, row in sub.iterrows():
+            close = float(row["close"])
+            open_ = float(row["open"])
+            high = float(row["high"])
+            low = float(row["low"])
+            volume = float(row["volume"])
+            
+            candle_up = close > open_
+            body_size = abs(close - open_)
+            total_range = high - low
+            
+            if total_range <= 0:
+                continue
+                
+            # نسبة الجسم إلى المدى (تشير إلى قوة الاتجاه)
+            body_ratio = body_size / total_range
+            
+            # حجم التداول بالنسبة للمدى (كثافة التداول)
+            volume_density = volume / total_range if total_range > 0 else 0
+            
+            # شمعة قوية صاعدة: جسم كبير + حجم عالي
+            if candle_up and body_ratio > 0.6 and volume_density > np.percentile([v/(h-l) for v,h,l in zip(sub['volume'], sub['high'], sub['low']) if (h-l)>0], 70):
+                vb, sb = FP_SCORE_BUY
+                votes_b += vb; score_b += sb; tag = "aggressive_buy"
+            
+            # شمعة قوية هابطة: جسم كبير + حجم عالي  
+            elif not candle_up and body_ratio > 0.6 and volume_density > np.percentile([v/(h-l) for v,h,l in zip(sub['volume'], sub['high'], sub['low']) if (h-l)>0], 70):
+                vs, ss = FP_SCORE_SELL
+                votes_s += vs; score_s += ss; tag = "aggressive_sell"
+                
+            # دوجي مع حجم عالي (امتصاص)
+            elif body_ratio < 0.3 and volume_density > np.percentile([v/(h-l) for v,h,l in zip(sub['volume'], sub['high'], sub['low']) if (h-l)>0], 80):
+                if close > open_:  # دوجي مع إغلاق أعلى (امتصاص بيع)
+                    vs, ss = FP_SCORE_ABSORB_PENALTY
+                    votes_s += vs; score_s += ss; tag = "absorb_bid"
+                else:  # دوجي مع إغلاق أقل (امتصاص شراء)
+                    vb, sb = FP_SCORE_ABSORB_PENALTY
+                    votes_b += vb; score_b += sb; tag = "absorb_ask"
+
+        return {"votes_b": votes_b, "votes_s": votes_s,
+                "score_b": score_b, "score_s": score_s, "tag": tag}
+    except Exception as e:
+        return {"votes_b":0,"votes_s":0,"score_b":0.0,"score_s":0.0,"tag":f"err:{e}"}
+
+def analyze_diagonal_flow(orderbook: dict, depth: int = FLOW_STACK_DEPTH, imb_ratio: float = FLOW_IMB_RATIO):
+    try:
+        bids = orderbook.get("bids", []) or []
+        asks = orderbook.get("asks", []) or []
+        n = min(len(bids), len(asks), depth)
+        buy_strength = sell_strength = 0
+
+        for i in range(n):
+            b_qty = float(bids[i][1]); a_qty = float(asks[i][1])
+            if b_qty <= 0 or a_qty <= 0: 
+                continue
+            r = b_qty / a_qty
+            if r >= imb_ratio: buy_strength += 1
+            elif r <= 1/imb_ratio: sell_strength += 1
+
+        if buy_strength > sell_strength:
+            bias = "buy"; votes, score = DIAG_SCORE_BUY
+        elif sell_strength > buy_strength:
+            bias = "sell"; votes, score = DIAG_SCORE_SELL
+        else:
+            bias = "neutral"; votes, score = 0, 0.0
+
+        return {"bias": bias, "votes": votes, "score": score,
+                "buy_strength": buy_strength, "sell_strength": sell_strength}
+    except Exception as e:
+        return {"bias":"neutral","votes":0,"score":0.0,"err":str(e)}
+
+def council_boost_from_flow(df: pd.DataFrame, orderbook: dict):
+    fp = analyze_footprint_fallback(df)
+    dg = analyze_diagonal_flow(orderbook)
+
+    # تجميع التصويت
+    votes_b = fp["votes_b"] + (dg["votes"] if dg["bias"]=="buy" else 0)
+    votes_s = fp["votes_s"] + (dg["votes"] if dg["bias"]=="sell" else 0)
+    score_b = fp["score_b"] + (dg["score"] if dg["bias"]=="buy" else 0.0)
+    score_s = fp["score_s"] + (dg["score"] if dg["bias"]=="sell" else 0.0)
+
+    tag = f"FP:{fp['tag']} | DIAG:{dg['bias']}(B{dg.get('buy_strength',0)}/S{dg.get('sell_strength',0)})"
+    return {"votes_b":votes_b, "votes_s":votes_s, "score_b":score_b, "score_s":score_s, "tag":tag}
+
 # ========= Unified snapshot emitter =========
 def emit_snapshots(exchange, symbol, df, balance_fn=None, pnl_fn=None):
     try:
@@ -519,7 +659,7 @@ def emit_snapshots(exchange, symbol, df, balance_fn=None, pnl_fn=None):
         flow = compute_flow_metrics(df)
         cv = council_votes_pro(df)
         mode = decide_strategy_mode(df)
-        gz = golden_zone_check(df, {"adx": cv["ind"]["adx"]}, "buy" if cv["b"]>=cv["s"] else "sell")
+        gz = golden_zone_check(df, {"adx": cv["ind"].get("adx", 0)}, "buy" if cv["b"]>=cv["s"] else "sell")
 
         bal = None; cpnl = None
         if callable(balance_fn):
@@ -545,8 +685,8 @@ def emit_snapshots(exchange, symbol, df, balance_fn=None, pnl_fn=None):
         side_hint = "BUY" if cv["b"]>=cv["s"] else "SELL"
         dash = (f"DASH → hint-{side_hint} | Council BUY({cv['b']},{cv['score_b']:.1f}) "
                 f"SELL({cv['s']},{cv['score_s']:.1f}) | "
-                f"RSI={cv['ind'].get('rsi',0):.1f} ADX={cv['ind'].get('adx',0):.1f} "
-                f"DI={cv['ind'].get('di_spread',0):.1f} | Confidence: {cv.get('confidence',0):.1f}")
+                f"RSI={safe_get(cv['ind'],'rsi',0):.1f} ADX={safe_get(cv['ind'],'adx',0):.1f} "
+                f"DI={safe_get(cv['ind'],'di_spread',0):.1f} | Confidence: {cv.get('confidence',0):.1f}")
 
         strat_icon = "⚡" if mode["mode"]=="scalp" else "📈" if mode["mode"]=="trend" else "ℹ️"
         strat = f"Strategy: {strat_icon} {mode['mode'].upper()}"
@@ -575,7 +715,7 @@ def emit_snapshots(exchange, symbol, df, balance_fn=None, pnl_fn=None):
             bm_imb = bm['imbalance'] if bm and bm.get('ok') else 1.0
             
             print(f"🧠 SNAP | {side_hint} | votes={cv['b']}/{cv['s']} score={cv['score_b']:.1f}/{cv['score_s']:.1f} "
-                  f"| ADX={cv['ind'].get('adx',0):.1f} DI={cv['ind'].get('di_spread',0):.1f} | "
+                  f"| ADX={safe_get(cv['ind'],'adx',0):.1f} DI={safe_get(cv['ind'],'di_spread',0):.1f} | "
                   f"z={flow_z:.2f} | imb={bm_imb:.2f}{gz_snap_note}", 
                   flush=True)
             
@@ -658,9 +798,9 @@ def compute_momentum_indicators(df):
 
 def compute_trend_strength(df, ind):
     close = df['close'].astype(float)
-    adx = ind.get('adx', 0)
-    plus_di = ind.get('plus_di', 0)
-    minus_di = ind.get('minus_di', 0)
+    adx = safe_get(ind, 'adx', 0)
+    plus_di = safe_get(ind, 'plus_di', 0)
+    minus_di = safe_get(ind, 'minus_di', 0)
     
     momentum_5 = ((close.iloc[-1] - close.iloc[-5]) / close.iloc[-5]) * 100 if len(close) >= 5 else 0
     momentum_10 = ((close.iloc[-1] - close.iloc[-10]) / close.iloc[-10]) * 100 if len(close) >= 10 else 0
@@ -905,7 +1045,7 @@ def golden_zone_check(df, ind=None, side_hint=None):
         rsi_last = float(rsi_series.iloc[-1])
         rsi_ma_last = float(rsi_ma_series.iloc[-1])
         
-        adx = ind.get('adx', 0) if ind else 0
+        adx = safe_get(ind, 'adx', 0) if ind else 0
         disp = _displacement_gz(c)
         
         if side == "down":
@@ -972,9 +1112,9 @@ def golden_zone_check(df, ind=None, side_hint=None):
 def decide_strategy_mode(df, adx=None, di_plus=None, di_minus=None, rsi_ctx=None):
     if adx is None or di_plus is None or di_minus is None:
         ind = compute_indicators(df)
-        adx = ind.get('adx', 0)
-        di_plus = ind.get('plus_di', 0)
-        di_minus = ind.get('minus_di', 0)
+        adx = safe_get(ind, 'adx', 0)
+        di_plus = safe_get(ind, 'plus_di', 0)
+        di_minus = safe_get(ind, 'minus_di', 0)
     
     if rsi_ctx is None:
         rsi_ctx = rsi_ma_context(df)
@@ -998,6 +1138,15 @@ def super_council_ai_enhanced(df):
             return {"b": 0, "s": 0, "score_b": 0.0, "score_s": 0.0, "logs": [], "confidence": 0.0}
         
         ind = compute_indicators(df)
+        
+        # استخراج قيم scalar بأمان
+        adx = safe_get(ind, "adx", 0.0)
+        plus_di = safe_get(ind, "plus_di", 0.0)
+        minus_di = safe_get(ind, "minus_di", 0.0)
+        di_spread = abs(plus_di - minus_di)
+        rsi_val = safe_get(ind, "rsi", 50.0)
+        atr_val = safe_get(ind, "atr", 0.0)
+        
         rsi_ctx = rsi_ma_context(df)
         gz = golden_zone_check(df, ind)
         candles = compute_candles(df)
@@ -1007,31 +1156,56 @@ def super_council_ai_enhanced(df):
         trend_strength = compute_trend_strength(df, ind)
         
         macd, macd_signal, macd_hist = compute_macd(df['close'].astype(float))
-        macd_bullish = macd.iloc[-1] > macd_signal.iloc[-1] and macd_hist.iloc[-1] > 0
-        macd_bearish = macd.iloc[-1] < macd_signal.iloc[-1] and macd_hist.iloc[-1] < 0
+        macd_bullish = last_scalar(macd) > last_scalar(macd_signal) and last_scalar(macd_hist) > 0
+        macd_bearish = last_scalar(macd) < last_scalar(macd_signal) and last_scalar(macd_hist) < 0
         
         bb_upper, bb_middle, bb_lower = compute_bollinger_bands(df['close'].astype(float))
         current_price = float(df['close'].iloc[-1])
-        bb_position = (current_price - bb_lower.iloc[-1]) / (bb_upper.iloc[-1] - bb_lower.iloc[-1]) if bb_upper.iloc[-1] != bb_lower.iloc[-1] else 0.5
+        bb_position = (current_price - last_scalar(bb_lower)) / (last_scalar(bb_upper) - last_scalar(bb_lower)) if last_scalar(bb_upper) != last_scalar(bb_lower) else 0.5
         
-        stoch_k, stoch_d = compute_stochastic(df['high'].astype(float), df['low'].astype(float), df['close'].astype(float))
-        stoch_bullish = stoch_k.iloc[-1] > stoch_d.iloc[-1] and stoch_k.iloc[-1] < 80
-        stoch_bearish = stoch_k.iloc[-1] < stoch_d.iloc[-1] and stoch_k.iloc[-1] > 20
+        stoch_k, stoch_d = compute_stochastic(df['high'].ast(float), df['low'].astype(float), df['close'].astype(float))
+        stoch_bullish = last_scalar(stoch_k) > last_scalar(stoch_d) and last_scalar(stoch_k) < 80
+        stoch_bearish = last_scalar(stoch_k) < last_scalar(stoch_d) and last_scalar(stoch_k) > 20
         
         votes_b = 0; votes_s = 0
         score_b = 0.0; score_s = 0.0
         logs = []
         confidence_factors = []
 
+        # ===== FLOW/FOOTPRINT BOOST =====
+        try:
+            # جلب orderbook حديث إذا لم يكن محفوظًا
+            current_orderbook = STATE.get("last_orderbook", {})
+            if not current_orderbook:
+                current_orderbook = ex.fetch_order_book(SYMBOL, limit=FLOW_STACK_DEPTH)
+                STATE["last_orderbook"] = current_orderbook
+            
+            boost = council_boost_from_flow(df, current_orderbook)
+            
+            # دمج النتائج مع التصويت الأساسي
+            votes_b += boost["votes_b"]
+            votes_s += boost["votes_s"]
+            score_b += boost["score_b"] * WEIGHT_FOOTPRINT
+            score_s += boost["score_s"] * WEIGHT_FOOTPRINT
+            
+            logs.append(f"🧭 FLOW-BOOST → {boost['tag']}  "
+                       f"Δvotes: B+{boost['votes_b']} S+{boost['votes_s']} | "
+                       f"Δscore: B+{boost['score_b']:.1f} S+{boost['score_s']:.1f}")
+        except Exception as e:
+            logs.append(f"🟨 FLOW-BOOST error: {e}")
+
         # 1. تحليل الزخم المبكر
         if TREND_EARLY_DETECTION:
-            if momentum['price_accel'] > 0 and momentum['roc'] > 0.5:
+            momentum_accel = safe_get(momentum, 'price_accel', 0.0)
+            momentum_roc = safe_get(momentum, 'roc', 0.0)
+            
+            if momentum_accel > 0 and momentum_roc > 0.5:
                 score_b += WEIGHT_MOMENTUM * 1.5
                 votes_b += 2
                 logs.append("🚀 تسارع صاعد قوي")
                 confidence_factors.append(1.2)
             
-            if momentum['price_accel'] < 0 and momentum['roc'] < -0.5:
+            if momentum_accel < 0 and momentum_roc < -0.5:
                 score_s += WEIGHT_MOMENTUM * 1.5
                 votes_s += 2
                 logs.append("💥 تسارع هابط قوي")
@@ -1039,7 +1213,10 @@ def super_council_ai_enhanced(df):
 
         # 2. تأكيد الحجم
         if VOLUME_CONFIRMATION:
-            if volume_profile['volume_spike'] and volume_profile['volume_trend'] == 'up':
+            volume_spike = volume_profile.get('volume_spike', False)
+            volume_trend = volume_profile.get('volume_trend', '')
+            
+            if volume_spike and volume_trend == 'up':
                 if current_price > float(df['open'].iloc[-1]):
                     score_b += WEIGHT_VOLUME * 1.2
                     votes_b += 1
@@ -1050,11 +1227,6 @@ def super_council_ai_enhanced(df):
                     logs.append("📊 حجم هابط مؤكد")
 
         # 3. مؤشر الاتجاه المتقدم
-        adx = ind.get('adx', 0)
-        plus_di = ind.get('plus_di', 0)
-        minus_di = ind.get('minus_di', 0)
-        di_spread = abs(plus_di - minus_di)
-
         if adx > ADX_TREND_MIN:
             if plus_di > minus_di and di_spread > DI_SPREAD_TREND:
                 score_b += WEIGHT_ADX * 2.0
@@ -1068,104 +1240,118 @@ def super_council_ai_enhanced(df):
                 confidence_factors.append(1.5)
 
         # 4. مؤشر RSI المتقدم
-        rsi = rsi_ctx["rsi"]
-        rsi_ma_val = rsi_ctx["rsi_ma"]
+        rsi_cross = rsi_ctx.get("cross", "none")
+        rsi_trendz = rsi_ctx.get("trendZ", "none")
         
-        if rsi_ctx["cross"] == "bull" and rsi < 70:
+        if rsi_cross == "bull" and rsi_val < 70:
             score_b += WEIGHT_RSI * 1.5
             votes_b += 2
             logs.append("🟢 RSI إيجابي قوي")
-        elif rsi_ctx["cross"] == "bear" and rsi > 30:
+        elif rsi_cross == "bear" and rsi_val > 30:
             score_s += WEIGHT_RSI * 1.5
             votes_s += 2
             logs.append("🔴 RSI سلبي قوي")
 
-        if rsi_ctx["trendZ"] == "bull":
+        if rsi_trendz == "bull":
             score_b += WEIGHT_RSI * 2.0
             votes_b += 3
             logs.append("🚀 RSI ترند صاعد مستمر")
-        elif rsi_ctx["trendZ"] == "bear":
+        elif rsi_trendz == "bear":
             score_s += WEIGHT_RSI * 2.0
             votes_s += 3
             logs.append("💥 RSI ترند هابط مستمر")
 
         # 5. المناطق الذهبية المحسنة
         if gz and gz.get("ok"):
-            if gz['zone']['type'] == 'golden_bottom' and gz['score'] >= 6.0:
+            gz_score = gz.get("score", 0.0)
+            zone_type = gz.get("zone", {}).get("type", "")
+            
+            if zone_type == 'golden_bottom' and gz_score >= 6.0:
                 score_b += WEIGHT_GOLDEN * 2.5
                 votes_b += 4
-                logs.append(f"🏆 قاع ذهبي فائق (قوة: {gz['score']:.1f})")
+                logs.append(f"🏆 قاع ذهبي فائق (قوة: {gz_score:.1f})")
                 confidence_factors.append(1.8)
-            elif gz['zone']['type'] == 'golden_top' and gz['score'] >= 6.0:
+            elif zone_type == 'golden_top' and gz_score >= 6.0:
                 score_s += WEIGHT_GOLDEN * 2.5
                 votes_s += 4
-                logs.append(f"🏆 قمة ذهبية فائقة (قوة: {gz['score']:.1f})")
+                logs.append(f"🏆 قمة ذهبية فائقة (قوة: {gz_score:.1f})")
                 confidence_factors.append(1.8)
 
         # 6. تحليل الشموع اليابانية المتقدم
-        if candles["score_buy"] > 0:
-            enhanced_candle_score = min(3.0, candles["score_buy"] * 1.2)
+        candles_buy_score = candles.get("score_buy", 0.0)
+        candles_sell_score = candles.get("score_sell", 0.0)
+        
+        if candles_buy_score > 0:
+            enhanced_candle_score = min(3.0, candles_buy_score * 1.2)
             score_b += WEIGHT_CANDLES * enhanced_candle_score
             votes_b += int(enhanced_candle_score)
-            logs.append(f"🕯️ شموع BUY قوية ({candles['pattern']}) +{enhanced_candle_score:.1f}")
+            logs.append(f"🕯️ شموع BUY قوية ({candles.get('pattern', '')}) +{enhanced_candle_score:.1f}")
         
-        if candles["score_sell"] > 0:
-            enhanced_candle_score = min(3.0, candles["score_sell"] * 1.2)
+        if candles_sell_score > 0:
+            enhanced_candle_score = min(3.0, candles_sell_score * 1.2)
             score_s += WEIGHT_CANDLES * enhanced_candle_score
             votes_s += int(enhanced_candle_score)
-            logs.append(f"🕯️ شموع SELL قوية ({candles['pattern']}) +{enhanced_candle_score:.1f}")
+            logs.append(f"🕯️ شموع SELL قوية ({candles.get('pattern', '')}) +{enhanced_candle_score:.1f}")
 
         # 7. تحليل التدفق والطلب المتقدم
         if flow.get("ok"):
-            if flow["delta_z"] >= 2.0 and flow["cvd_trend"] == "up":
+            delta_z = flow.get("delta_z", 0.0)
+            cvd_trend = flow.get("cvd_trend", "")
+            
+            if delta_z >= 2.0 and cvd_trend == "up":
                 score_b += WEIGHT_FLOW * 1.8
                 votes_b += 2
-                logs.append(f"🌊 تدفق شرائي قوي (z: {flow['delta_z']:.2f})")
-            elif flow["delta_z"] <= -2.0 and flow["cvd_trend"] == "down":
+                logs.append(f"🌊 تدفق شرائي قوي (z: {delta_z:.2f})")
+            elif delta_z <= -2.0 and cvd_trend == "down":
                 score_s += WEIGHT_FLOW * 1.8
                 votes_s += 2
-                logs.append(f"🌊 تدفق بيعي قوي (z: {flow['delta_z']:.2f})")
+                logs.append(f"🌊 تدفق بيعي قوي (z: {delta_z:.2f})")
 
         # 8. مؤشر MACD المتقدم
-        if macd_bullish and macd_hist.iloc[-1] > macd_hist.iloc[-2]:
+        if macd_bullish and last_scalar(macd_hist) > last_scalar(macd_hist.shift(1)):
             score_b += WEIGHT_MACD * 1.5
             votes_b += 2
             logs.append("📈 MACD صاعد متسارع")
-        elif macd_bearish and macd_hist.iloc[-1] < macd_hist.iloc[-2]:
+        elif macd_bearish and last_scalar(macd_hist) < last_scalar(macd_hist.shift(1)):
             score_s += WEIGHT_MACD * 1.5
             votes_s += 2
             logs.append("📉 MACD هابط متسارع")
 
         # 9. بولنجر باندز لاكتشاف الانعكاسات
-        if bb_position < 0.2 and current_price > bb_lower.iloc[-1]:
+        if bb_position < 0.2 and current_price > last_scalar(bb_lower):
             score_b += 1.2
             votes_b += 1
             logs.append("🔄 ارتداد من نطاق بولنجر سفلي")
-        elif bb_position > 0.8 and current_price < bb_upper.iloc[-1]:
+        elif bb_position > 0.8 and current_price < last_scalar(bb_upper):
             score_s += 1.2
             votes_s += 1
             logs.append("🔄 ارتداد من نطاق بولنجر علوي")
 
         # 10. ستوكاستيك للمدى القصير
-        if stoch_bullish and stoch_k.iloc[-1] < 30:
+        stoch_k_val = last_scalar(stoch_k)
+        if stoch_bullish and stoch_k_val < 30:
             score_b += 1.0
             votes_b += 1
             logs.append("🎯 ستوكاستيك في منطقة شراء")
-        elif stoch_bearish and stoch_k.iloc[-1] > 70:
+        elif stoch_bearish and stoch_k_val > 70:
             score_s += 1.0
             votes_s += 1
             logs.append("🎯 ستوكاستيك في منطقة بيع")
 
         # 11. قوة الترند
-        if trend_strength["strength"] in ["strong", "very_strong"]:
-            if trend_strength["direction"] == "up":
-                score_b += trend_strength["multiplier"] * 1.5
+        trend_strength_val = trend_strength.get("strength", "")
+        trend_direction = trend_strength.get("direction", "")
+        trend_multiplier = trend_strength.get("multiplier", 1.0)
+        
+        if trend_strength_val in ["strong", "very_strong"]:
+            if trend_direction == "up":
+                score_b += trend_multiplier * 1.5
                 votes_b += 2
-                logs.append(f"💪 ترند صاعد {trend_strength['strength']} (مضاعف: {trend_strength['multiplier']})")
+                logs.append(f"💪 ترند صاعد {trend_strength_val} (مضاعف: {trend_multiplier})")
             else:
-                score_s += trend_strength["multiplier"] * 1.5
+                score_s += trend_multiplier * 1.5
                 votes_s += 2
-                logs.append(f"💪 ترند هابط {trend_strength['strength']} (مضاعف: {trend_strength['multiplier']})")
+                logs.append(f"💪 ترند هابط {trend_strength_val} (مضاعف: {trend_multiplier})")
 
         # تطبيق عوامل الثقة
         if confidence_factors:
@@ -1174,7 +1360,7 @@ def super_council_ai_enhanced(df):
             score_s *= confidence_multiplier
 
         # تخفيف في النطاق المحايد
-        if rsi_ctx["in_chop"]:
+        if rsi_ctx.get("in_chop", False):
             score_b *= 0.7
             score_s *= 0.7
             logs.append("⚖️ RSI محايد — تخفيض ثقة")
@@ -1187,19 +1373,19 @@ def super_council_ai_enhanced(df):
 
         # حساب الثقة النهائية
         total_score = score_b + score_s
-        confidence = min(1.0, total_score / 20.0) if total_score > 0 else 0.0
+        confidence = min(1.0, total_score / 25.0) if total_score > 0 else 0.0
 
         # تحديث المؤشرات الإضافية
         ind.update({
-            "rsi_ma": rsi_ctx["rsi_ma"],
-            "rsi_trendz": rsi_ctx["trendZ"],
+            "rsi_ma": rsi_ctx.get("rsi_ma", 50.0),
+            "rsi_trendz": rsi_trendz,
             "di_spread": di_spread,
             "gz": gz,
-            "candle_buy_score": candles["score_buy"],
-            "candle_sell_score": candles["score_sell"],
-            "wick_up_big": candles["wick_up_big"],
-            "wick_dn_big": candles["wick_dn_big"],
-            "candle_tags": candles["pattern"],
+            "candle_buy_score": candles_buy_score,
+            "candle_sell_score": candles_sell_score,
+            "wick_up_big": candles.get("wick_up_big", False),
+            "wick_dn_big": candles.get("wick_dn_big", False),
+            "candle_tags": candles.get("pattern", ""),
             "macd_bullish": macd_bullish,
             "macd_bearish": macd_bearish,
             "bb_position": bb_position,
@@ -1246,7 +1432,7 @@ def detect_super_scalp_opportunity(df, ind, flow, volume_profile, momentum, spre
             'score_b': 0.0, 'score_s': 0.0
         }
         
-        rsi = ind.get('rsi', 50)
+        rsi = safe_get(ind, 'rsi', 50)
         if 30 <= rsi <= 45:
             scalp_council['score_b'] += 1.5
             scalp_council['b'] += 1
@@ -1393,7 +1579,7 @@ def manage_intelligent_trailing_stop(current_price, side, ind, trend_strength):
     if not STATE.get("trail_active", False):
         return
     
-    atr = ind.get("atr", 0.0)
+    atr = safe_get(ind, "atr", 0.0)
     pnl_pct = STATE.get("pnl", 0.0)
     
     if trend_strength["strength"] == "very_strong":
@@ -1505,9 +1691,9 @@ def open_market_enhanced(side, qty, price):
     
     votes = snap["cv"]
     mode_data = decide_strategy_mode(df, 
-                                   adx=votes["ind"].get("adx"),
-                                   di_plus=votes["ind"].get("plus_di"),
-                                   di_minus=votes["ind"].get("minus_di"),
+                                   adx=safe_get(votes["ind"], "adx", 0),
+                                   di_plus=safe_get(votes["ind"], "plus_di", 0),
+                                   di_minus=safe_get(votes["ind"], "minus_di", 0),
                                    rsi_ctx=rsi_ma_context(df))
     
     mode = mode_data["mode"]
@@ -1791,7 +1977,7 @@ def manage_scalp_trailing_stop(current_price, side, ind):
             log_i("SCALP: Breakeven armed & Trail activated")
 
     if STATE.get("trail_active"):
-        atr = ind.get("atr", 0.0)
+        atr = safe_get(ind, "atr", 0.0)
         trail_mult = SCALP_ATR_TRAIL_MULT
         
         if side == "long":
@@ -1811,13 +1997,13 @@ def manage_scalp_trailing_stop(current_price, side, ind):
 manage_after_entry = manage_after_entry_enhanced
 
 def smart_exit_guard(state, df, ind, flow, bm, now_price, pnl_pct, mode, side, entry_price, gz=None):
-    atr = ind.get('atr', 0.0)
-    adx = ind.get('adx', 0.0)
-    rsi = ind.get('rsi', 50.0)
-    rsi_ma = ind.get('rsi_ma', 50.0)
+    atr = safe_get(ind, 'atr', 0.0)
+    adx = safe_get(ind, 'adx', 0.0)
+    rsi = safe_get(ind, 'rsi', 50.0)
+    rsi_ma = safe_get(ind, 'rsi_ma', 50.0)
     
     if len(df) >= 3:
-        adx_slope = adx - ind.get('adx_prev', adx)
+        adx_slope = adx - safe_get(ind, 'adx_prev', adx)
     else:
         adx_slope = 0.0
 
@@ -1913,6 +2099,12 @@ def trade_loop_enhanced():
             ind = compute_indicators(df)
             spread_bps = orderbook_spread_bps()
             
+            # تحديث orderbook للـFlow Boost
+            try:
+                STATE["last_orderbook"] = ex.fetch_order_book(SYMBOL, limit=FLOW_STACK_DEPTH)
+            except Exception as e:
+                log_w(f"Orderbook update failed: {e}")
+            
             snap = emit_snapshots(ex, SYMBOL, df,
                                 balance_fn=lambda: float(bal) if bal else None,
                                 pnl_fn=lambda: float(compound_pnl))
@@ -1950,7 +2142,7 @@ def trade_loop_enhanced():
             gz = council_data.get("gz")
             sig = None
 
-            if (gz and gz.get("ok") and ind.get("adx",0) >= GOLDEN_ENTRY_ADX):
+            if (gz and gz.get("ok") and safe_get(ind, "adx",0) >= GOLDEN_ENTRY_ADX):
                 if gz["zone"]["type"]=="golden_bottom" and gz["score"]>=GOLDEN_ENTRY_SCORE:
                     sig = "buy"
                     log_i(f"🎯 GOLDEN ENTRY: BUY | score={gz['score']:.1f} | منطقة ذهبية قوية")
@@ -2006,7 +2198,7 @@ def pretty_snapshot(bal, info, ind, spread_bps, reason=None, df=None):
         print(colored("─"*100,"cyan"))
         print("📈 INDICATORS & RF")
         print(f"   💲 Price {fmt(info.get('price'))} | RF filt={fmt(info.get('filter'))}  hi={fmt(info.get('hi'))} lo={fmt(info.get('lo'))}")
-        print(f"   🧮 RSI={fmt(ind.get('rsi'))}  +DI={fmt(ind.get('plus_di'))}  -DI={fmt(ind.get('minus_di'))}  ADX={fmt(ind.get('adx'))}  ATR={fmt(ind.get('atr'))}")
+        print(f"   🧮 RSI={fmt(safe_get(ind, 'rsi'))}  +DI={fmt(safe_get(ind, 'plus_di'))}  -DI={fmt(safe_get(ind, 'minus_di'))}  ADX={fmt(safe_get(ind, 'adx'))}  ATR={fmt(safe_get(ind, 'atr'))}")
         print(f"   🎯 ENTRY: SUPER COUNCIL AI + GOLDEN ENTRY + SUPER SCALP |  spread_bps={fmt(spread_bps,2)}")
         print(f"   ⏱️ closes_in ≈ {left_s}s")
         print("\n🧭 POSITION")
@@ -2090,6 +2282,7 @@ def verify_execution_environment():
     print(f"🚀 SUPER SCALP ENGINE: {'ACTIVE' if SCALP_MODE else 'INACTIVE'}", flush=True)
     print(f"🧠 SUPER COUNCIL AI: {'ACTIVE' if COUNCIL_AI_MODE else 'INACTIVE'}", flush=True)
     print(f"💎 INTELLIGENT TREND RIDING: {'ACTIVE' if TREND_RIDING_AI else 'INACTIVE'}", flush=True)
+    print(f"📊 FOOTPRINT & DIAGONAL FLOW: ACTIVE", flush=True)
     
     if not EXECUTE_ORDERS:
         print("🟡 WARNING: EXECUTE_ORDERS=False - البوت في وضع التحليل فقط!", flush=True)
@@ -2183,6 +2376,8 @@ if __name__ == "__main__":
     print(colored(f"🚀 SUPER SCALP ENGINE: {'ACTIVE' if SCALP_MODE else 'INACTIVE'}", "yellow"))
     print(colored(f"🧠 SUPER COUNCIL AI: {'ACTIVE' if COUNCIL_AI_MODE else 'INACTIVE'}", "yellow"))
     print(colored(f"💎 INTELLIGENT TREND RIDING: {'ACTIVE' if TREND_RIDING_AI else 'INACTIVE'}", "yellow"))
+    print(colored(f"📊 FOOTPRINT & DIAGONAL FLOW: ACTIVE", "yellow"))
+    print(colored(f"💰 PROFIT COMPOUNDING: ACTIVE", "yellow"))
     print(colored(f"⚡ EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
     
     logging.info("service starting…")
