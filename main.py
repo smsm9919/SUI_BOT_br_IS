@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SUI ULTRA PRO — Smart Council + SMC/FVG + OrderBook Flow + Iceberg + Early-Ignition + Scale-In
+SUI ULTRA PRO — Smart Council + SMC/FVG + OrderBook Flow + Iceberg + Early-Ignition + Scale-In + Scalp Fusion
 Exchange: Bybit/BingX (USDT Perp via CCXT)
 """
 
@@ -88,6 +88,21 @@ PROBE_SIZE = 0.35   # 35% من حجم الصفقة
 SCALE_IN_ADD = 0.30 # 30% تعزيز
 SCALE_IN_MAX = 2    # أقصى عدد تعزيزات
 PULLBACK_FOR_ADD = 0.30  # %0.30 تراجع مقبول للتعزيز
+
+# ==== SCALP COUNCIL FUSION (inside-council) ====
+SCALP_MIN_ADX        = 18        # بوابة زخم دنيا للسكالب
+SCALP_CHOP_ADX       = 15        # اعتبار المنطقة "تشوب" لو ADX ضعيف + Squeeze
+SCALP_NEED_SMC_NEAR  = True      # يفضّل FVG/OB قريب
+SCALP_NEED_FLOW      = True      # يفضّل Flow (Iceberg/Wall/Imbalance)
+SCALP_IMPULSE_ATR    = 0.90      # شمعة اندفاع: جسم ≥ 0.9×ATR
+SCALP_LONG_WICK_R    = 0.60      # فتيلة طويلة: ≥ 60% من الرينج
+SCALP_BODY_MAX_FOR_W = 0.35      # جسم صغير مع فتيلة ⇒ حصاد سيولة
+
+# جدوى الربح (داخل المجلس)
+SCALP_MIN_PROFIT_PCT = 0.45      # أقل هدف منطقي بعد التكاليف
+SCALP_MIN_RR         = 1.30      # أقل عائد/مخاطرة
+TAKER_FEE_PCT        = 0.10      # % تقدير رسوم تاكر (عدّل لمنصتك)
+EXTRA_SLIPPAGE_PCT   = 0.05      # % احتياطي انزلاق
 
 # =================== EXCHANGE ===================
 def make_ex():
@@ -227,6 +242,185 @@ def spread_bps():
         bid=ob["bids"][0][0]; ask=ob["asks"][0][0]
         return (ask-bid)/((ask+bid)/2)*10000.0
     except Exception: return 0.0
+
+# =================== SCALP ENHANCEMENT FUNCTIONS ===================
+def analyze_candle_strength(df):
+    """تحليل قوة الشمعة الحالية للكشف عن الاندفاع أو حصاد الفتائل"""
+    if len(df) < 20:
+        return {"impulse": False, "harvest": False, "body_ratio": 0, "wick_ratio": 0, "direction": "bull", "strong": False}
+    
+    try:
+        c, o, h, l = map(float, (df["close"].iloc[-1], df["open"].iloc[-1], df["high"].iloc[-1], df["low"].iloc[-1]))
+        atr = compute_indicators(df).get("atr", 0) or 0.001
+        rng = (h - l) if (h > l) else 1e-9
+        body = abs(c - o)
+        body_ratio = body / rng
+        up_w = (h - max(c, o)) / rng
+        dn_w = (min(c, o) - l) / rng
+        wick_ratio = max(up_w, dn_w)
+
+        impulse = (body >= atr * SCALP_IMPULSE_ATR) and (body_ratio > 0.55)
+        harvest = (wick_ratio >= SCALP_LONG_WICK_R) and (body_ratio <= SCALP_BODY_MAX_FOR_W)
+        direction = "bull" if c > o else "bear"
+        
+        return {
+            "impulse": impulse,
+            "harvest": harvest, 
+            "body_ratio": round(body_ratio, 3),
+            "wick_ratio": round(wick_ratio, 3),
+            "direction": direction,
+            "strong": (impulse or harvest)
+        }
+    except Exception as e:
+        log_w(f"analyze_candle_strength error: {e}")
+        return {"impulse": False, "harvest": False, "body_ratio": 0, "wick_ratio": 0, "direction": "bull", "strong": False}
+
+def detect_liquidity_sweep(df, lookback=20):
+    """كشف سيولة ممسوحة (Liquidity Sweep)"""
+    try:
+        if len(df) < lookback + 5: 
+            return {"has": False}
+            
+        hi = float(df["high"].iloc[-1])
+        lo = float(df["low"].iloc[-1])
+        prev_hi = float(df["high"].tail(lookback+1).head(lookback).max())
+        prev_lo = float(df["low"].tail(lookback+1).head(lookback).min())
+        c, o = float(df["close"].iloc[-1]), float(df["open"].iloc[-1])
+        
+        touched_prev_high = hi >= prev_hi and c < prev_hi and (hi - max(c, o)) / max(hi - lo, 1e-9) >= 0.5
+        touched_prev_low = lo <= prev_lo and c > prev_lo and (min(c, o) - lo) / max(hi - lo, 1e-9) >= 0.5
+        
+        if touched_prev_high: 
+            return {"has": True, "type": "buy_sweep"}   # سحب سيولة فوق ⇒ ميل بيع
+        if touched_prev_low:  
+            return {"has": True, "type": "sell_sweep"}  # سحب سيولة تحت ⇒ ميل شراء
+            
+        return {"has": False}
+    except Exception as e:
+        log_w(f"detect_liquidity_sweep error: {e}")
+        return {"has": False}
+
+def expected_move_and_cost(council, df, price):
+    """تقدير الحركة المتوقعة والتكاليف"""
+    try:
+        ind = council.get("indicators", {})
+        atr = ind.get("basic", {}).get("atr", 0) or compute_indicators(df).get("atr", 0) or 0.001
+        flow = ind.get("orderbook_flow", {}) or {}
+        wall = ind.get("orderbook_wall", {}) or {}
+        ice = ind.get("iceberg", {}) or {}
+
+        flow_boost = 0.20 if flow.get("signal") in ("buy", "sell") else 0.0
+        wall_boost = 0.25 if wall.get("has") and wall.get("strong") else 0.0
+        ice_boost = min(0.35, (ice.get("strength", 0) / 3.0)) if ice.get("has") else 0.0
+
+        exp_move_pct = ((atr / max(price, 1e-9)) * 100.0) * 0.45 + (flow_boost + wall_boost + ice_boost)
+        cost_pct = (TAKER_FEE_PCT * 2.0) + (spread_bps() / 100.0) + EXTRA_SLIPPAGE_PCT
+        
+        return round(exp_move_pct, 3), round(cost_pct, 3)
+    except Exception as e:
+        log_w(f"expected_move_and_cost error: {e}")
+        return 0.5, 0.3
+
+def scalp_council_fusion(df, council, price):
+    """مقيّم السكالب داخل المجلس - ينتج تقييم شامل للصفقة"""
+    reasons = []
+    ind = council.get("indicators", {})
+    basic = ind.get("basic", {})
+    adx = float(basic.get("adx", 0))
+    bb = ind.get("bollinger", {})
+    squeeze = bool(bb.get("squeeze", False))
+    fvg = ind.get("fvg", {})
+    obx = ind.get("order_block", {})
+    flow = ind.get("orderbook_flow", {})
+    ice = ind.get("iceberg", {})
+    wall = ind.get("orderbook_wall", {})
+    mtf = council.get("mtf_analysis", {}) or {}
+    candles = ind.get("candles", {}) or analyze_candle_strength(df)
+    sweep = ind.get("sweep", {}) or detect_liquidity_sweep(df)
+
+    # === البوابات الأساسية ===
+    if adx < SCALP_MIN_ADX: 
+        reasons.append("weak_adx")
+    if squeeze and adx <= SCALP_CHOP_ADX: 
+        reasons.append("chop_squeeze")
+    if SCALP_NEED_SMC_NEAR and not ((fvg.get("has") and fvg.get("near")) or (obx.get("has") and obx.get("near"))):
+        reasons.append("no_smc_near")
+    if SCALP_NEED_FLOW and not ((flow.get("signal") in ("buy", "sell")) or (ice.get("has")) or (wall.get("has"))):
+        reasons.append("no_flow")
+
+    # === اتجاه اللحظة من الأطر الزمنية ===
+    scalp_bias = "neutral"
+    if mtf.get("signals", {}):
+        s5 = mtf["signals"].get("5m", "neutral")
+        s15 = mtf["signals"].get("15m", "neutral")
+        if s5 == "bullish" and s15 != "bearish": 
+            scalp_bias = "buy"
+        if s5 == "bearish" and s15 != "bullish": 
+            scalp_bias = "sell"
+
+    # === نظام النقاط للشموع والإشارات ===
+    grade = 0.0
+    
+    # الشموع القوية
+    if candles.get("impulse"):
+        grade += 1.6
+        reasons.append(f"impulse_{candles.get('direction')}")
+    if candles.get("harvest"):
+        grade += 1.2
+        reasons.append(f"harvest_{candles.get('direction')}")
+    
+    # السيولة الممسوحة
+    if sweep.get("has"):
+        if sweep["type"] == "sell_sweep": 
+            grade += 1.0
+            reasons.append("sweep_buy")   # ميل شراء
+        if sweep["type"] == "buy_sweep":  
+            grade += 1.0
+            reasons.append("sweep_sell")  # ميل بيع
+
+    # إشارات SMC/Flow الإضافية
+    if fvg.get("has"): 
+        grade += 0.8
+    if obx.get("has"): 
+        grade += 1.0
+    if flow.get("signal") in ("buy", "sell"): 
+        grade += 0.6
+    if ice.get("has"): 
+        grade += 0.6 + min(0.6, ice.get("strength", 0) / 2.0)
+    if wall.get("has") and wall.get("strong"): 
+        grade += 0.6
+
+    # مواءمة الأطر الزمنية
+    if scalp_bias == "buy": 
+        grade += 0.7
+    if scalp_bias == "sell": 
+        grade += 0.7
+
+    # === تحليل الجدوى المالية ===
+    exp, cost = expected_move_and_cost(council, df, price)
+    est_sl_pct = (ind.get("basic", {}).get("atr", 0) or compute_indicators(df).get("atr", 0) or 0.001) / max(price, 1e-9) * 100.0 * 0.80
+    est_tp_pct = max(SCALP_MIN_PROFIT_PCT + cost, exp * 0.70)
+    rr = est_tp_pct / max(est_sl_pct, 0.01)
+    
+    if est_tp_pct < (SCALP_MIN_PROFIT_PCT + cost): 
+        reasons.append("low_exp_move")
+    if rr < SCALP_MIN_RR: 
+        reasons.append("low_rr")
+
+    # === القرار النهائي ===
+    ok = (len(reasons) == 0) or (("impulse" in "_".join(reasons) or "harvest" in "_".join(reasons)) and rr >= SCALP_MIN_RR)
+
+    return {
+        "grade": round(grade, 2),
+        "ok": bool(ok),
+        "bias": scalp_bias,
+        "reasons": reasons,
+        "exp_move_pct": exp,
+        "cost_pct": cost,
+        "rr": round(rr, 2),
+        "candles": candles,
+        "sweep": sweep
+    }
 
 # =================== INDICATORS / MODULES ===================
 def wilder_ema(s:pd.Series,n:int): return s.ewm(alpha=1/n, adjust=False).mean()
@@ -457,7 +651,7 @@ def detect_iceberg():
             near_th = px_now * ICEBERG_TRADE_NEAR_PCT / 100.0
             vol_near=sum(t["amount"] for t in TRADES_BUF if abs(t["price"]-px_now)<=near_th)
             refilled = (q_now >= q_max*ICEBERG_REFILL_RATIO) and (q_max > q_min*1.05)
-            out.append({"px":px_now,"q_now":q_now,"q_max":q_max,"vol_near":vol_near,"refilled":refilled})
+            out.append({"px":px_now,"q_now":q_now,"q_max":q_max,"vol_near":vol_near,"refilled":refilled}
         return out
     def best(stats):
         cand=[ (s["vol_near"] / max(s["q_max"],1e-9), s) for s in stats if s["refilled"] ]
@@ -481,6 +675,10 @@ def ultra_intelligent_council(df, mtf_meta=None):
         ind_basic = compute_indicators(df); rsi_ctx = rsi_ma_context(df)
         fvg = detect_fvg(df); obx = detect_order_blocks(df); flow = fetch_orderbook_metrics()
         iceberg = detect_iceberg()
+
+        # === إضافة تحليل السكالب ===
+        candle_ctx = analyze_candle_strength(df)
+        sweep_ctx = detect_liquidity_sweep(df)
 
         votes_b=votes_s=0; score_b=score_s=0.0; logs=[]; confirms=[]
 
@@ -521,21 +719,73 @@ def ultra_intelligent_council(df, mtf_meta=None):
             if iceberg["side"]=="bid": votes_b+=2; score_b+=1.2+iceberg["strength"]; logs.append(f"🧊 ICEBERG bid({iceberg['strength']:.2f})"); confirms.append("Iceberg")
             else: votes_s+=2; score_s+=1.2+iceberg["strength"]; logs.append(f"🧊 ICEBERG ask({iceberg['strength']:.2f})"); confirms.append("Iceberg")
 
-        return {
-            "votes_buy":votes_b,"votes_sell":votes_s,
-            "score_buy":round(score_b,2),"score_sell":round(score_s,2),
-            "logs":logs,"confirmation_signals":confirms,
+        # --- Candle votes (Impulse / Harvest) ---
+        if candle_ctx["strong"]:
+            if candle_ctx["impulse"]:
+                if candle_ctx["direction"]=="bull":
+                    votes_buy += 3; score_buy += 2.0; logs.append(f"💥 Impulse Bull | body={candle_ctx['body_ratio']:.2f}"); confirms.append("Impulse")
+                else:
+                    votes_sell += 3; score_sell += 2.0; logs.append(f"💥 Impulse Bear | body={candle_ctx['body_ratio']:.2f}"); confirms.append("Impulse")
+            if candle_ctx["harvest"]:
+                if candle_ctx["direction"]=="bull":
+                    votes_buy += 2; score_buy += 1.5; logs.append(f"🪄 Wick Harvest (Buy) | wick={candle_ctx['wick_ratio']:.2f}"); confirms.append("WickHarvest")
+                else:
+                    votes_sell += 2; score_sell += 1.5; logs.append(f"🪄 Wick Harvest (Sell) | wick={candle_ctx['wick_ratio']:.2f}"); confirms.append("WickHarvest")
+
+        # --- Liquidity Sweep bonus ---
+        if sweep_ctx.get("has"):
+            if sweep_ctx["type"]=="sell_sweep":
+                votes_buy += 2; score_buy += 1.2; logs.append("🧲 Sweep Below ⇒ BUY bias"); confirms.append("Sweep")
+            if sweep_ctx["type"]=="buy_sweep":
+                votes_sell += 2; score_sell += 1.2; logs.append("🧲 Sweep Above ⇒ SELL bias"); confirms.append("Sweep")
+
+        # --- SCALP Fusion (inside-council) ---
+        px = float(df["close"].iloc[-1])
+        scalp_meta = scalp_council_fusion(df, {
             "indicators":{
-                "super_trend":st,"ichimoku":ichi,"bollinger":bb,"macd":macd,"stoch_rsi":stoch,
-                "market_structure":structure,"money_flow":money,"basic":ind_basic,"rsi_context":rsi_ctx,
-                "fvg":fvg,"order_block":obx,"orderbook_flow":flow,"iceberg":iceberg
+                "basic": ind_basic,
+                "bollinger": bb,
+                "fvg": fvg,
+                "order_block": obx,
+                "orderbook_flow": flow,
+                "iceberg": iceberg,
+                "candles": candle_ctx,
+                "sweep": sweep_ctx
             },
-            "mtf_analysis":mtf_meta
+            "mtf_analysis": mtf_meta
+        }, px)
+
+        # وزن السكالب ينعكس على التصويت العام
+        if scalp_meta["ok"]:
+            boost = min(3.0, 1.0 + scalp_meta["grade"] / 3.0)
+            if scalp_meta["bias"] == "buy" or (candle_ctx["direction"] == "bull" and candle_ctx["strong"]):
+                votes_b += 1
+                score_b += boost
+                logs.append(f"⚡ SCALP OK ↑ grade={scalp_meta['grade']:.2f} RR={scalp_meta['rr']:.2f}")
+            elif scalp_meta["bias"] == "sell" or (candle_ctx["direction"] == "bear" and candle_ctx["strong"]):
+                votes_s += 1
+                score_s += boost
+                logs.append(f"⚡ SCALP OK ↓ grade={scalp_meta['grade']:.2f} RR={scalp_meta['rr']:.2f}")
+        else:
+            logs.append(f"🛑 SCALP REJECT: {','.join(scalp_meta['reasons'])} | exp={scalp_meta['exp_move_pct']:.2f}% cost={scalp_meta['cost_pct']:.2f}% RR={scalp_meta['rr']:.2f}")
+
+        return {
+            "votes_buy": votes_b, "votes_sell": votes_s,
+            "score_buy": round(score_b, 2), "score_sell": round(score_s, 2),
+            "logs": logs, "confirmation_signals": confirms,
+            "indicators": {
+                "super_trend": st, "ichimoku": ichi, "bollinger": bb, "macd": macd, "stoch_rsi": stoch,
+                "market_structure": structure, "money_flow": money, "basic": ind_basic, "rsi_context": rsi_ctx,
+                "fvg": fvg, "order_block": obx, "orderbook_flow": flow, "iceberg": iceberg,
+                "candles": candle_ctx, "sweep": sweep_ctx
+            },
+            "mtf_analysis": mtf_meta,
+            "scalp": scalp_meta
         }
     except Exception as e:
         log_w(f"council error: {e}")
         return {"votes_buy":0,"votes_sell":0,"score_buy":0,"score_sell":0,
-                "logs":[],"confirmation_signals":[], "indicators":{},"mtf_analysis":None}
+                "logs":[],"confirmation_signals":[], "indicators":{},"mtf_analysis":None, "scalp": {}}
 
 # =================== LOG MEDIUM PANEL ===================
 def render_medium_log(c):
@@ -569,7 +819,26 @@ def render_medium_log(c):
         print(f"🧠 SMC: FVG={fvg_txt} | OB={obx_txt} | FLOW={flow_txt}", flush=True)
         if ice and ice.get("has"):
             print(f"🧊 Iceberg: side={ice.get('side')} @ {float(ice.get('price',0)):.4f} | str={float(ice.get('strength',0)):.2f}", flush=True)
-        print("—"*70, flush=True)
+
+        # إضافة تحليل السكالب
+        scalp = c.get("scalp", {})
+        if scalp:
+            status = "✅" if scalp.get("ok") else "❌"
+            print(f"⚡ SCALP: {status} grade={scalp.get('grade',0):.2f} | bias={scalp.get('bias','-')} | "
+                  f"exp={scalp.get('exp_move_pct',0):.2f}% | cost={scalp.get('cost_pct',0):.2f}% | RR={scalp.get('rr',0):.2f}", flush=True)
+            
+            if scalp.get("reasons"):
+                reasons_text = ', '.join(scalp['reasons'])
+                print(f"   📋 Reasons: {reasons_text}", flush=True)
+                
+            candle = scalp.get("candles", {})
+            if candle and candle.get("strong"):
+                impulse_icon = "💥" if candle.get("impulse") else ""
+                harvest_icon = "🪄" if candle.get("harvest") else ""
+                print(f"   🕯️ Candle: {candle.get('direction')} {impulse_icon}{harvest_icon} | "
+                      f"body={candle.get('body_ratio',0):.2f} | wick={candle.get('wick_ratio',0):.2f}", flush=True)
+        
+        print("—" * 70, flush=True)
     except Exception as e:
         log_w(f"render_medium_log error: {e}")
 
@@ -770,6 +1039,83 @@ def early_ignition_signal(council):
     if strong_buy and (council["score_buy"] >= council["score_sell"] + 1.0): return "buy_probe"
     if strong_sell and (council["score_sell"] >= council["score_buy"] + 1.0): return "sell_probe"
     return None
+
+# =================== ENHANCED POSITION LOGGING ===================
+def log_position_opened(side, price, qty, mode, council):
+    """لوغ مفصل عند فتح الصفقة الجديدة"""
+    try:
+        print("═" * 80, flush=True)
+        
+        # العنوان الرئيسي
+        position_type = "🟩 LONG" if side == "buy" else "🟥 SHORT"
+        print(f"{position_type} | MODE: {mode.upper()} | LEVERAGE: {LEVERAGE}x", flush=True)
+        
+        # معلومات الأساسية
+        bal = balance_usdt()
+        print(f"💰 ENTRY: {price:.6f} | QTY: {qty:.6f} | SYMBOL: {SYMBOL}", flush=True)
+        print(f"💼 BALANCE: {bal:.2f} USDT | 📦 COMPOUND PNL: {compound_pnl:+.4f} USDT", flush=True)
+        
+        # تحليل المجلس
+        if council:
+            sc_buy = council.get('score_buy', 0.0)
+            sc_sell = council.get('score_sell', 0.0)
+            votes_b = council.get('votes_buy', 0)
+            votes_s = council.get('votes_sell', 0)
+            confirms = council.get('confirmation_signals', [])
+            
+            print(f"🧠 COUNCIL: BUY={sc_buy:.1f}({votes_b}v) | SELL={sc_sell:.1f}({votes_s}v) | CONFIRMS={len(confirms)}", flush=True)
+            
+            # عرض أهم إشارات التأكيد
+            if confirms:
+                top_confirms = confirms[:4]  # أول 4 إشارات فقط
+                print(f"   ✅ Top signals: {', '.join(top_confirms)}", flush=True)
+        
+        # تحليل السكالب المتقدم
+        scalp_meta = council.get('scalp', {}) if council else {}
+        if scalp_meta:
+            grade = scalp_meta.get('grade', 0)
+            rr = scalp_meta.get('rr', 0)
+            bias = scalp_meta.get('bias', 'neutral')
+            exp_move = scalp_meta.get('exp_move_pct', 0)
+            cost = scalp_meta.get('cost_pct', 0)
+            
+            print(f"⚡ SCALP ANALYSIS: Grade={grade:.2f} | RR={rr:.2f} | Bias={bias}", flush=True)
+            print(f"   📊 Expected: {exp_move:.2f}% | Cost: {cost:.2f}% | Net: {exp_move-cost:.2f}%", flush=True)
+            
+            if scalp_meta.get('reasons'):
+                reasons = scalp_meta['reasons'][:3]  # أول 3 أسباب فقط
+                print(f"   🔍 Reasons: {', '.join(reasons)}", flush=True)
+        
+        # إعدادات إدارة الصفقة
+        mgmt_config = setup_trade_management(mode)
+        if mgmt_config:
+            tp_targets = mgmt_config.get('tp_targets', [])
+            tp_fractions = mgmt_config.get('tp_fractions', [])
+            
+            print(f"🎯 PROFIT TARGETS:", flush=True)
+            for i, (target, fraction) in enumerate(zip(tp_targets, tp_fractions)):
+                print(f"   TP{i+1}: {target}% ({fraction*100}% of position)", flush=True)
+            
+            # معلومات الحماية
+            be_level = mgmt_config.get('be_activate_pct', 0) * 100
+            trail_activate = mgmt_config.get('trail_activate_pct', 0) * 100
+            atr_trail = mgmt_config.get('atr_trail_mult', 0)
+            
+            print(f"🛡️ PROTECTIONS: BE@ {be_level:.1f}% | Trail@ {trail_activate:.1f}% | ATR×{atr_trail}", flush=True)
+        
+        # معلومات السيولة والسبريد
+        current_spread = spread_bps()
+        spread_status = "✅ GOOD" if current_spread <= MAX_SPREAD_BPS else "⚠️ HIGH"
+        print(f"📊 LIQUIDITY: Spread {current_spread:.1f}bps {spread_status} | Max: {MAX_SPREAD_BPS}bps", flush=True)
+        
+        # الطابع الزمني
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"⏰ OPENED: {ts} | Thread: {threading.get_ident()}", flush=True)
+        
+        print("═" * 80, flush=True)
+        
+    except Exception as e:
+        log_w(f"Enhanced position log failed: {e}")
 
 # =================== LOOP ===================
 def ultra_trading_loop():
