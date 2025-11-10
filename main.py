@@ -7,6 +7,7 @@ RF Futures Bot — RF-LIVE ONLY (Multi-Exchange: BingX & Bybit)
 • Smart Exit Management + Wait-for-next-signal
 • Professional Logging & Dashboard
 • Multi-Exchange Support: BingX & Bybit
+• Scalp Engine + Snapshot/Mark System
 """
 
 import os, time, math, random, signal, sys, traceback, logging, json
@@ -154,6 +155,85 @@ TREND_ATR_MULT = 1.8
 MAX_TRADES_PER_HOUR = 6
 COOLDOWN_SECS_AFTER_CLOSE = 60
 ADX_GATE = 17
+
+# ===== SCALP ENGINE (Smart) =====
+SCALP_MODE            = True      # تشغيل وضع السكالب
+SCALP_EXECUTE         = True      # نفّذ (مش Shadow)
+SCALP_SIZE_FACTOR     = 0.30      # 30% من حجم الترند
+SCALP_ADX_GATE        = 12.0      # زخم أدنى للسكالب
+SCALP_MIN_SCORE       = 3.2       # حد تصويت المجلس للسكالب
+SCALP_IMB_THRESHOLD   = 1.00      # ميل تدفّق لصالح الاتجاه (من compute_flow_metrics)
+SCALP_VOL_MA_FACTOR   = 1.20      # حجم > 1.2×MA20
+SCALP_COOLDOWN_SEC    = 10        # تبريد بين صفقات السكالب
+SCALP_RESPECT_WAIT    = False     # السكالب لا ينتظر بوابة "ما بعد الإغلاق"
+SCALP_TP_SINGLE_PCT   = 0.35      # 0.30–0.40% هدف واحد سريع
+SCALP_BE_AFTER_PCT    = 0.15      # Breakeven مبكّر
+SCALP_ATR_TRAIL_MULT  = 1.0       # تريل مشدود
+
+# ===== SNAPSHOT & MARK (Unified) =====
+GREEN="🟢"; RED="🔴"
+RESET="\x1b[0m"; BOLD="\x1b[1m"
+FG_G="\x1b[32m"; FG_R="\x1b[31m"; FG_C="\x1b[36m"; FG_Y="\x1b[33m"; FG_M="\x1b[35m"
+
+def _fmt(x,n=6):
+    try: return f"{float(x):.{n}f}"
+    except: return str(x)
+
+def _pct(x):
+    try: return f"{float(x):.2f}%"
+    except: return str(x)
+
+def _ind_brief(ind):
+    if not ind: return "n/a"
+    return (f"ADX={_fmt(ind.get('adx',0),1)} DI={_fmt(ind.get('di',0),1)} | "
+            f"RSI={_fmt(ind.get('rsi',0),1)}/{_fmt(ind.get('rsi_ma',0),1)} | "
+            f"ATR={_fmt(ind.get('atr',0),4)}")
+
+def _council_brief(c):
+    if not c: return "n/a"
+    return f"B:{c.get('b',0)}/{_fmt(c.get('score_b',0),1)} | S:{c.get('s',0)}/{_fmt(c.get('score_s',0),1)}"
+
+def _flow_brief(f):
+    if not f: return "n/a"
+    parts=[f"Δz={_fmt(f.get('delta_z','n/a'),2)}", f"CVD={_fmt(f.get('cvd_last','n/a'),0)}", f"trend={f.get('cvd_trend','?')}"]
+    if f.get("spike"): parts.append("SPIKE")
+    return " ".join(parts)
+
+def print_position_snapshot(reason="OPEN", color=None):
+    try:
+        side   = STATE.get("side")
+        open_f = STATE.get("open",False)
+        qty    = STATE.get("qty"); px = STATE.get("entry")
+        mode   = STATE.get("mode","trend")
+        lev    = globals().get("LEVERAGE",0)
+        tp1    = globals().get("TP1_PCT_BASE",0)
+        be_a   = globals().get("BREAKEVEN_AFTER",0)
+        trailA = globals().get("TRAIL_ACTIVATE_PCT",0)
+        atrM   = globals().get("ATR_TRAIL_MULT",0)
+        bal    = balance_usdt()
+        spread = STATE.get("last_spread_bps")
+        council= STATE.get("last_council")
+        ind    = STATE.get("last_ind")
+        flow   = STATE.get("last_flow")
+
+        if color is None:
+            icon = GREEN if side=="buy" else RED
+            ccol = FG_G if side=="buy" else FG_R
+        else:
+            icon = GREEN if str(color).lower()=="green" else RED
+            ccol = FG_G if icon==GREEN else FG_R
+
+        log_i(f"{ccol}{BOLD}{icon} {reason} — POSITION SNAPSHOT{RESET}")
+        log_i(f"{BOLD}SIDE:{RESET} {side} | {BOLD}QTY:{RESET} {_fmt(qty)} | {BOLD}ENTRY:{RESET} {_fmt(px)} | "
+              f"{BOLD}LEV:{RESET} {lev}× | {BOLD}MODE:{RESET} {mode} | {BOLD}OPEN:{RESET} {open_f}")
+        log_i(f"{BOLD}TP1:{RESET} {_pct(tp1)} | {BOLD}BE@:{RESET} {_pct(be_a)} | "
+              f"{BOLD}TRAIL:{RESET} act≥{_pct(trailA)}, ATR×{atrM} | {BOLD}SPREAD:{RESET} {_fmt(spread,2)} bps")
+        log_i(f"{FG_C}IND:{RESET} {_ind_brief(ind)}")
+        log_i(f"{FG_M}COUNCIL:{RESET} {_council_brief(council)}")
+        log_i(f"{FG_Y}FLOW:{RESET} {_flow_brief(flow)}")
+        log_i("—"*72)
+    except Exception as e:
+        log_w(f"SNAPSHOT ERR: {e}")
 
 # =================== PROFESSIONAL LOGGING ===================
 def log_i(msg): print(f"ℹ️ {msg}", flush=True)
@@ -352,6 +432,7 @@ def verify_execution_environment():
     print(f"🎯 GOLDEN ENTRY: score={GOLDEN_ENTRY_SCORE} | ADX={GOLDEN_ENTRY_ADX}", flush=True)
     print(f"📈 CANDLES: Full patterns + Wick exhaustion + Golden reversal", flush=True)
     print(f"⚡ RF SETTINGS: period={RF_PERIOD} | mult={RF_MULT} (SUI Optimized)", flush=True)
+    print(f"🚀 SCALP ENGINE: {'ACTIVE' if SCALP_MODE else 'INACTIVE'}", flush=True)
     
     if not EXECUTE_ORDERS:
         print("🟡 WARNING: EXECUTE_ORDERS=False - البوت في وضع التحليل فقط!", flush=True)
@@ -980,6 +1061,95 @@ def emit_snapshots(exchange, symbol, df, balance_fn=None, pnl_fn=None):
         return {"bm": None, "flow": None, "cv": {"b":0,"s":0,"score_b":0.0,"score_s":0.0,"ind":{}},
                 "mode": {"mode":"n/a"}, "gz": None, "wallet": ""}
 
+# =================== SCALP ENGINE ===================
+_last_scalp_ts = 0
+
+def detect_scalp_kick(df, ind, flow, vol_ma20, spread_bps):
+    """
+    يرجّع ('buy'|'sell', reason) أو (None, why)
+    يعتمد على دفع حجم + RSI اتجاهي + ADX أدنى + ميل CVD
+    """
+    try:
+        if not SCALP_MODE or not SCALP_EXECUTE:
+            return (None, "scalp_off")
+
+        # حارس سبريد
+        if spread_bps is not None and spread_bps > MAX_SPREAD_BPS:
+            return (None, f"spread>{MAX_SPREAD_BPS}bps")
+
+        # زخم أدنى
+        adx = float(ind.get("adx", 0))
+        if adx < SCALP_ADX_GATE:
+            return (None, f"adx<{SCALP_ADX_GATE}")
+
+        # حجم اندفاعي مقابل MA20
+        vol = float(ind.get("vol", 0))
+        if vol_ma20 and vol < vol_ma20 * SCALP_VOL_MA_FACTOR:
+            return (None, "vol<MA20*factor")
+
+        # RSI اتجاهي
+        rsi = float(ind.get("rsi", 50)); rsi_ma = float(ind.get("rsi_ma", 50))
+        rsi_bull = (rsi > rsi_ma + 0.5)
+        rsi_bear = (rsi < rsi_ma - 0.5)
+
+        # Flow من compute_flow_metrics
+        delta_z = float(flow.get("delta_z", 0)) if flow else 0.0
+        cvd_trend = (flow.get("cvd_trend") or "").lower()
+
+        long_ok  = (delta_z >= SCALP_IMB_THRESHOLD) and rsi_bull and (cvd_trend=="up")
+        short_ok = (delta_z <= -SCALP_IMB_THRESHOLD) and rsi_bear and (cvd_trend=="down")
+
+        # لا سكالب لو في صفقة مفتوحة
+        if STATE.get("open", False):
+            return (None, "position_open")
+
+        # تخفيف شرط المجلس للسكالب
+        council = council_votes_pro_enhanced(df)
+        score_b = float(council.get("score_b", 0.0))
+        score_s = float(council.get("score_s", 0.0))
+
+        if long_ok and score_b >= SCALP_MIN_SCORE:
+            return ("buy", f"impulse+vol+RSI+Δz({delta_z:.2f}) score_b={score_b:.1f}")
+        if short_ok and score_s >= SCALP_MIN_SCORE:
+            return ("sell", f"impulse+vol+RSI+Δz({delta_z:.2f}) score_s={score_s:.1f}")
+
+        return (None, "no_confluence")
+    except Exception as e:
+        return (None, f"err:{e}")
+
+def try_open_scalp(px_now, balance, df, ind, flow, vol_ma20, spread_bps):
+    global _last_scalp_ts
+    if not SCALP_MODE or not SCALP_EXECUTE:
+        return False
+    if time.time() - _last_scalp_ts < SCALP_COOLDOWN_SEC:
+        return False
+
+    direction, reason = detect_scalp_kick(df, ind, flow, vol_ma20, spread_bps)
+    if direction is None:
+        return False
+
+    qty = compute_size(balance, px_now) * SCALP_SIZE_FACTOR
+    if qty <= 0:
+        log_w("SCALP: skip qty<=0"); return False
+
+    opened = open_market_enhanced(direction, qty, px_now)
+    if opened:
+        _last_scalp_ts = time.time()
+        STATE["mode"] = "scalp"
+        # ضبط إدارة سريعة
+        STATE["tp1_done"] = False
+        globals()["TP1_PCT_BASE"] = SCALP_TP_SINGLE_PCT
+        globals()["BREAKEVEN_AFTER"] = SCALP_BE_AFTER_PCT
+        globals()["ATR_TRAIL_MULT"] = SCALP_ATR_TRAIL_MULT
+        # لوج وSnapshot
+        log_i(f"SCALP OPEN {direction.upper()} qty={qty:.4f} px={px_now:.6f} reason=<{reason}> "
+              f"tp={SCALP_TP_SINGLE_PCT:.2f}% be@={SCALP_BE_AFTER_PCT:.2f}% trail=ATR×{SCALP_ATR_TRAIL_MULT}")
+        try:
+            print_position_snapshot(reason="OPEN[SCALP]", color=("green" if direction=="buy" else "red"))
+        except: pass
+        return True
+    return False
+
 # =================== EXECUTION MANAGER ===================
 def execute_trade_decision(side, price, qty, mode, council_data, gz_data):
     """تنفيذ قرار التداول مع التسجيل الواضح"""
@@ -1016,10 +1186,10 @@ def setup_trade_management(mode):
     """تهيئة إدارة الصفقة حسب النمط"""
     if mode == "scalp":
         return {
-            "tp1_pct": SCALP_TP1 / 100.0,
-            "be_activate_pct": SCALP_BE_AFTER / 100.0,
+            "tp1_pct": SCALP_TP_SINGLE_PCT / 100.0,
+            "be_activate_pct": SCALP_BE_AFTER_PCT / 100.0,
             "trail_activate_pct": 0.8 / 100.0,
-            "atr_trail_mult": SCALP_ATR_MULT,
+            "atr_trail_mult": SCALP_ATR_TRAIL_MULT,
             "close_aggression": "high"
         }
     else:
@@ -1088,7 +1258,14 @@ def open_market_enhanced(side, qty, price):
             "trail_tightened": False,
         })
         
+        # تحديث سياق لأجل السناپشوت
+        STATE["last_ind"] = votes["ind"] if isinstance(votes,dict) else {}
+        STATE["last_council"] = votes
+        STATE["last_flow"] = compute_flow_metrics(df)
+        STATE["last_spread_bps"] = orderbook_spread_bps()
+        
         log_g(f"✅ POSITION OPENED: {side.upper()} | mode={mode}")
+        print_position_snapshot(reason="OPEN")
         return True
     
     return False
@@ -1477,7 +1654,7 @@ def smart_exit_guard(state, df, ind, flow, bm, now_price, pnl_pct, mode, side, e
 
 # =================== ENHANCED TRADE LOOP ===================
 def trade_loop_enhanced():
-    """حلقة تداول محسنة مع Golden Entry ومجلس الإدارة"""
+    """حلقة تداول محسنة مع Golden Entry ومجلس الإدارة والسكالب"""
     global wait_for_next_signal_side
     loop_i = 0
     
@@ -1508,6 +1685,19 @@ def trade_loop_enhanced():
                     "flow": snap["flow"],
                     **info
                 })
+            
+            # —— محاولة سكالب قبل الترند —— 
+            if not STATE["open"]:
+                vol_ma20 = float(ind.get("vol_ma20", 0))
+                flow_ctx = compute_flow_metrics(df)
+                # خزّن سياق لأجل السناپشوت/التحليل
+                STATE["last_ind"] = ind
+                STATE["last_council"] = council_votes_pro_enhanced(df)
+                STATE["last_flow"] = flow_ctx
+                STATE["last_spread_bps"] = spread_bps
+                # جرّب السكالب
+                if try_open_scalp(px, bal, df, ind, flow_ctx, vol_ma20, spread_bps):
+                    continue  # لو فتح سكالب، كمّل الحلقة (إدارة الصفقة تتكفل بالباقي)
             
             # قرار الدخول باستخدام مجلس الإدارة المحسن + Golden Entry
             reason = None
@@ -1580,7 +1770,7 @@ def pretty_snapshot(bal, info, ind, spread_bps, reason=None, df=None):
         print("📈 INDICATORS & RF")
         print(f"   💲 Price {fmt(info.get('price'))} | RF filt={fmt(info.get('filter'))}  hi={fmt(info.get('hi'))} lo={fmt(info.get('lo'))}")
         print(f"   🧮 RSI={fmt(ind.get('rsi'))}  +DI={fmt(ind.get('plus_di'))}  -DI={fmt(ind.get('minus_di'))}  ADX={fmt(ind.get('adx'))}  ATR={fmt(ind.get('atr'))}")
-        print(f"   🎯 ENTRY: COUNCIL PRO + GOLDEN ENTRY  |  spread_bps={fmt(spread_bps,2)}")
+        print(f"   🎯 ENTRY: COUNCIL PRO + GOLDEN ENTRY + SCALP ENGINE |  spread_bps={fmt(spread_bps,2)}")
         print(f"   ⏱️ closes_in ≈ {left_s}s")
         print("\n🧭 POSITION")
         bal_line = f"Balance={fmt(bal,2)}  Risk={int(RISK_ALLOC*100)}%×{LEVERAGE}x  CompoundPnL={fmt(compound_pnl)}  Eq~{fmt((bal or 0)+compound_pnl,2)}"
@@ -1598,10 +1788,22 @@ def pretty_snapshot(bal, info, ind, spread_bps, reason=None, df=None):
 
 # =================== API / KEEPALIVE ===================
 app = Flask(__name__)
+
+def register_mark_routes(app):
+    @app.get("/mark/<color>")
+    def _mark(color):
+        cc=str(color).lower()
+        if cc not in ("green","red"):
+            return jsonify({"ok":False,"error":"use /mark/green or /mark/red"}),400
+        print_position_snapshot(reason="MARK", color=cc)
+        return jsonify({"ok":True,"marked":cc})
+
+register_mark_routes(app)
+
 @app.route("/")
 def home():
     mode='LIVE' if MODE_LIVE else 'PAPER'
-    return f"✅ SUI Council PRO Bot — {EXCHANGE_NAME.upper()} — {SYMBOL} {INTERVAL} — {mode} — Multi-Exchange"
+    return f"✅ SUI Council PRO Bot — {EXCHANGE_NAME.upper()} — {SYMBOL} {INTERVAL} — {mode} — Multi-Exchange — Scalp Engine"
 
 @app.route("/metrics")
 def metrics():
@@ -1610,8 +1812,9 @@ def metrics():
         "symbol": SYMBOL, "interval": INTERVAL, "mode": "live" if MODE_LIVE else "paper",
         "leverage": LEVERAGE, "risk_alloc": RISK_ALLOC, "price": price_now(),
         "state": STATE, "compound_pnl": compound_pnl,
-        "entry_mode": "COUNCIL_PRO_GOLDEN", "wait_for_next_signal": wait_for_next_signal_side,
-        "guards": {"max_spread_bps": MAX_SPREAD_BPS, "final_chunk_qty": FINAL_CHUNK_QTY}
+        "entry_mode": "COUNCIL_PRO_GOLDEN_SCALP", "wait_for_next_signal": wait_for_next_signal_side,
+        "guards": {"max_spread_bps": MAX_SPREAD_BPS, "final_chunk_qty": FINAL_CHUNK_QTY},
+        "scalp_mode": SCALP_MODE
     })
 
 @app.route("/health")
@@ -1620,7 +1823,8 @@ def health():
         "ok": True, "exchange": EXCHANGE_NAME, "mode": "live" if MODE_LIVE else "paper",
         "open": STATE["open"], "side": STATE["side"], "qty": STATE["qty"],
         "compound_pnl": compound_pnl, "timestamp": datetime.utcnow().isoformat(),
-        "entry_mode": "COUNCIL_PRO_GOLDEN", "wait_for_next_signal": wait_for_next_signal_side
+        "entry_mode": "COUNCIL_PRO_GOLDEN_SCALP", "wait_for_next_signal": wait_for_next_signal_side,
+        "scalp_mode": SCALP_MODE
     }), 200
 
 def keepalive_loop():
@@ -1638,7 +1842,7 @@ def keepalive_loop():
 
 # =================== BOOT ===================
 if __name__ == "__main__":
-    log_banner("SUI COUNCIL PRO BOT - MULTI-EXCHANGE")
+    log_banner("SUI COUNCIL PRO BOT - MULTI-EXCHANGE - SCALP ENGINE")
     state = load_state() or {}
     state.setdefault("in_position", False)
 
@@ -1655,7 +1859,8 @@ if __name__ == "__main__":
     print(colored(f"🏆 GOLDEN ENTRY: score≥{GOLDEN_ENTRY_SCORE} | ADX≥{GOLDEN_ENTRY_ADX}", "yellow"))
     print(colored(f"🕯️ CANDLES: Full patterns + Wick exhaustion + Golden reversal", "yellow"))
     print(colored(f"📊 RF SETTINGS: period={RF_PERIOD} | mult={RF_MULT} (SUI Optimized)", "yellow"))
-    print(colored(f"🚀 EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
+    print(colored(f"🚀 SCALP ENGINE: {'ACTIVE' if SCALP_MODE else 'INACTIVE'}", "yellow"))
+    print(colored(f"⚡ EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
     
     logging.info("service starting…")
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
