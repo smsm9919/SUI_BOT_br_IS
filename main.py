@@ -673,7 +673,7 @@ def compute_vwap(df):
         return {"vwap": 0, "deviation": 0, "signal": "neutral", "price_above_vwap": False}
     
     high = df['high'].astype(float)
-    low = df['low'].astype(float)
+    low = df['low'].ast(float)
     close = df['close'].astype(float)
     volume = df['volume'].astype(float)
     
@@ -1698,9 +1698,9 @@ def professional_trade_management(df, state, current_price):
            (side == "short" and market_structure["choch_bullish"]):
             reversal_signals += 1
         
-        # فقدان الزخم
-        if (side == "long" and advanced_momentum["trend"] == "bearish") or \
-           (side == "short" and advanced_momentum["trend"] == "bullish"]):
+        # فقدان الزخم - التصحيح هنا: إزالة القوس المربع الزائد
+        if (side == "long" and advanced_momentum.get("trend") == "bearish") or \
+           (side == "short" and advanced_momentum.get("trend") == "bullish"):
             reversal_signals += 1
         
         if reversal_signals >= 2:
