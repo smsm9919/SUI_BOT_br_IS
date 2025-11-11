@@ -21,6 +21,30 @@ try:
 except Exception:
     def colored(t,*a,**k): return t
 
+# =================== HELPER FUNCTIONS ===================
+def last_val(x):
+    """يرجع آخر قيمة من Series أو ndarray أو list بأمان كـ float."""
+    try:
+        if hasattr(x, "iloc"):   # pandas Series
+            return float(x.iloc[-1])
+        elif hasattr(x, "__len__") and len(x) > 0:
+            return float(x[-1])
+        return float(x)
+    except Exception:
+        return 0.0
+
+def safe_iloc(series, index=-1):
+    """استخراج قيمة من Series أو array بأمان"""
+    try:
+        if hasattr(series, 'iloc'):
+            return float(series.iloc[index])
+        elif hasattr(series, '__getitem__'):
+            return float(series[index])
+        else:
+            return float(series)
+    except (IndexError, TypeError, ValueError):
+        return 0.0
+
 # =================== ENV / MODE ===================
 # Exchange Selection
 EXCHANGE_NAME = os.getenv("EXCHANGE", "bingx").lower()
@@ -399,9 +423,9 @@ def rsi_ma_context(df):
     
     cross = "none"
     if len(rsi) >= 2:
-        if (rsi.iloc[-2] <= rsi_ma.iloc[-2]) and (rsi.iloc[-1] > rsi_ma.iloc[-1]):
+        if (safe_iloc(rsi, -2) <= safe_iloc(rsi_ma, -2)) and (safe_iloc(rsi) > safe_iloc(rsi_ma)):
             cross = "bull"
-        elif (rsi.iloc[-2] >= rsi_ma.iloc[-2]) and (rsi.iloc[-1] < rsi_ma.iloc[-1]):
+        elif (safe_iloc(rsi, -2) >= safe_iloc(rsi_ma, -2)) and (safe_iloc(rsi) < safe_iloc(rsi_ma)):
             cross = "bear"
     
     above = (rsi > rsi_ma)
@@ -409,12 +433,12 @@ def rsi_ma_context(df):
     persist_bull = above.tail(RSI_TREND_PERSIST).all() if len(above) >= RSI_TREND_PERSIST else False
     persist_bear = below.tail(RSI_TREND_PERSIST).all() if len(below) >= RSI_TREND_PERSIST else False
     
-    current_rsi = float(rsi.iloc[-1])
+    current_rsi = safe_iloc(rsi)
     in_chop = RSI_NEUTRAL_BAND[0] <= current_rsi <= RSI_NEUTRAL_BAND[1]
     
     return {
         "rsi": current_rsi,
-        "rsi_ma": float(rsi_ma.iloc[-1]),
+        "rsi_ma": safe_iloc(rsi_ma),
         "cross": cross,
         "trendZ": "bull" if persist_bull else ("bear" if persist_bear else "none"),
         "in_chop": in_chop
@@ -612,9 +636,9 @@ def compute_macd(df, fast=12, slow=26, signal=9):
     histogram = macd_line - signal_line
     
     # تحليل الاتجاه
-    current_macd = macd_line.iloc[-1]
-    current_signal = signal_line.iloc[-1]
-    current_hist = histogram.iloc[-1]
+    current_macd = last_val(macd_line)
+    current_signal = last_val(signal_line)
+    current_hist = last_val(histogram)
     
     # اتجاه MACD
     if current_macd > current_signal and current_hist > 0:
@@ -627,11 +651,11 @@ def compute_macd(df, fast=12, slow=26, signal=9):
     # تقاطعات
     crossover = "none"
     if len(macd_line) >= 2 and len(signal_line) >= 2:
-        if (macd_line.iloc[-2] <= signal_line.iloc[-2] and 
-            macd_line.iloc[-1] > signal_line.iloc[-1]):
+        if (safe_iloc(macd_line, -2) <= safe_iloc(signal_line, -2) and 
+            current_macd > current_signal):
             crossover = "bullish"
-        elif (macd_line.iloc[-2] >= signal_line.iloc[-2] and 
-              macd_line.iloc[-1] < signal_line.iloc[-1]):
+        elif (safe_iloc(macd_line, -2) >= safe_iloc(signal_line, -2) and 
+              current_macd < current_signal):
             crossover = "bearish"
     
     return {
@@ -656,8 +680,8 @@ def compute_vwap(df):
     typical_price = (high + low + close) / 3
     vwap = (typical_price * volume).cumsum() / volume.cumsum()
     
-    current_vwap = vwap.iloc[-1]
-    current_price = close.iloc[-1]
+    current_vwap = last_val(vwap)
+    current_price = last_val(close)
     deviation = (current_price - current_vwap) / current_vwap * 100
     
     # إشارات VWAP
@@ -734,7 +758,7 @@ def enhanced_volume_momentum(df, period=20):
     price_change = close.pct_change(period)
     volume_weighted_momentum = price_change * volume_ratio
     
-    current_momentum = volume_weighted_momentum.iloc[-1]
+    current_momentum = last_val(volume_weighted_momentum)
     momentum_trend = "bull" if current_momentum > 0.02 else ("bear" if current_momentum < -0.02 else "neutral")
     
     return {
@@ -759,8 +783,8 @@ def stochastic_rsi_enhanced(df, rsi_period=14, stoch_period=14, k_period=3, d_pe
     stoch_k_smooth = stoch_k.rolling(k_period).mean()
     stoch_d = stoch_k_smooth.rolling(d_period).mean()
     
-    current_k = stoch_k_smooth.iloc[-1]
-    current_d = stoch_d.iloc[-1]
+    current_k = last_val(stoch_k_smooth)
+    current_d = last_val(stoch_d)
     
     # إشارات التداول
     signal = "neutral"
@@ -768,9 +792,9 @@ def stochastic_rsi_enhanced(df, rsi_period=14, stoch_period=14, k_period=3, d_pe
         signal = "bullish"
     elif current_k > 80 and current_d > 80:
         signal = "bearish"
-    elif current_k > current_d and len(stoch_k_smooth) >= 2 and len(stoch_d) >= 2 and stoch_k_smooth.iloc[-2] <= stoch_d.iloc[-2]:
+    elif current_k > current_d and len(stoch_k_smooth) >= 2 and len(stoch_d) >= 2 and safe_iloc(stoch_k_smooth, -2) <= safe_iloc(stoch_d, -2):
         signal = "bullish_cross"
-    elif current_k < current_d and len(stoch_k_smooth) >= 2 and len(stoch_d) >= 2 and stoch_k_smooth.iloc[-2] >= stoch_d.iloc[-2]:
+    elif current_k < current_d and len(stoch_k_smooth) >= 2 and len(stoch_d) >= 2 and safe_iloc(stoch_k_smooth, -2) >= safe_iloc(stoch_d, -2):
         signal = "bearish_cross"
     
     return {
@@ -790,13 +814,13 @@ def dynamic_pivot_points(df, period=20):
     low = df['low'].astype(float).tail(period)
     close = df['close'].astype(float).tail(period)
     
-    pivot = (high.iloc[-1] + low.iloc[-1] + close.iloc[-1]) / 3
-    r1 = 2 * pivot - low.iloc[-1]
-    r2 = pivot + (high.iloc[-1] - low.iloc[-1])
-    s1 = 2 * pivot - high.iloc[-1]
-    s2 = pivot - (high.iloc[-1] - low.iloc[-1])
+    pivot = (last_val(high) + last_val(low) + last_val(close)) / 3
+    r1 = 2 * pivot - last_val(low)
+    r2 = pivot + (last_val(high) - last_val(low))
+    s1 = 2 * pivot - last_val(high)
+    s2 = pivot - (last_val(high) - last_val(low))
     
-    current_price = close.iloc[-1]
+    current_price = last_val(close)
     
     # تحديد الانحياز
     if current_price > r1:
@@ -830,11 +854,11 @@ def dynamic_trend_indicator(df, fast_period=10, slow_period=20, signal_period=9)
     ema_signal = ema_fast.ewm(span=signal_period).mean()
     
     # تقاطعات الاتجاه
-    fast_above_slow = ema_fast.iloc[-1] > ema_slow.iloc[-1]
-    fast_above_signal = ema_fast.iloc[-1] > ema_signal.iloc[-1]
+    fast_above_slow = last_val(ema_fast) > last_val(ema_slow)
+    fast_above_signal = last_val(ema_fast) > last_val(ema_signal)
     
     # زخم الاتجاه
-    momentum = (ema_fast.iloc[-1] - ema_slow.iloc[-1]) / ema_slow.iloc[-1] * 100
+    momentum = (last_val(ema_fast) - last_val(ema_slow)) / last_val(ema_slow) * 100
     
     # تحديد الاتجاه
     if fast_above_slow and fast_above_signal and momentum > 0.1:
@@ -851,21 +875,21 @@ def dynamic_trend_indicator(df, fast_period=10, slow_period=20, signal_period=9)
     # إشارة التداول
     signal = "hold"
     if len(ema_fast) >= 2 and len(ema_slow) >= 2:
-        if trend == "strong_bull" and ema_fast.iloc[-2] <= ema_slow.iloc[-2]:
+        if trend == "strong_bull" and safe_iloc(ema_fast, -2) <= safe_iloc(ema_slow, -2):
             signal = "strong_buy"
-        elif trend == "bull" and len(ema_signal) >= 2 and ema_fast.iloc[-2] <= ema_signal.iloc[-2]:
+        elif trend == "bull" and len(ema_signal) >= 2 and safe_iloc(ema_fast, -2) <= safe_iloc(ema_signal, -2):
             signal = "buy"
-        elif trend == "strong_bear" and ema_fast.iloc[-2] >= ema_slow.iloc[-2]:
+        elif trend == "strong_bear" and safe_iloc(ema_fast, -2) >= safe_iloc(ema_slow, -2):
             signal = "strong_sell"
-        elif trend == "bear" and len(ema_signal) >= 2 and ema_fast.iloc[-2] >= ema_signal.iloc[-2]:
+        elif trend == "bear" and len(ema_signal) >= 2 and safe_iloc(ema_fast, -2) >= safe_iloc(ema_signal, -2):
             signal = "sell"
     
     return {
         "trend": trend,
         "momentum": momentum,
         "signal": signal,
-        "ema_fast": ema_fast.iloc[-1],
-        "ema_slow": ema_slow.iloc[-1]
+        "ema_fast": last_val(ema_fast),
+        "ema_slow": last_val(ema_slow)
     }
 
 # =================== ADVANCED FOOTPRINT ANALYSIS ===================
@@ -904,14 +928,14 @@ def advanced_footprint_analysis(df, current_price):
         
         # تحليل الشمعة الحالية
         current_candle = {
-            'high': float(high.iloc[-1]),
-            'low': float(low.iloc[-1]),
-            'close': float(close.iloc[-1]),
-            'open': float(open_price.iloc[-1]),
-            'volume': float(volume.iloc[-1]),
-            'volume_ratio': float(volume_ratio.iloc[-1]),
-            'delta': float(volume_delta.iloc[-1]),
-            'efficiency': float(efficiency.iloc[-1])
+            'high': last_val(high),
+            'low': last_val(low),
+            'close': last_val(close),
+            'open': last_val(open_price),
+            'volume': last_val(volume),
+            'volume_ratio': last_val(volume_ratio),
+            'delta': last_val(volume_delta),
+            'efficiency': last_val(efficiency)
         }
         
         # تحليل الامتصاص
@@ -952,8 +976,8 @@ def advanced_footprint_analysis(df, current_price):
         
         # صيد توقف صاعد: حركة سريعة هابطة ثم ارتداد سريع
         if len(df) >= 3:
-            prev_low = float(low.iloc[-2])
-            prev_high = float(high.iloc[-2])
+            prev_low = safe_iloc(low, -2)
+            prev_high = safe_iloc(high, -2)
             current_low = current_candle['low']
             current_high = current_candle['high']
             
@@ -1116,7 +1140,7 @@ def _displacement_gz(closes):
     if len(closes) < 22:
         return 0.0
     recent_std = closes.tail(20).std()
-    return abs(closes.iloc[-1] - closes.iloc[-2]) / max(recent_std, 1e-9)
+    return abs(last_val(closes) - safe_iloc(closes, -2)) / max(recent_std, 1e-9)
 
 def _last_impulse_gz(df):
     """اكتشاف آخر موجة دافعة بدقة"""
@@ -1174,28 +1198,28 @@ def golden_zone_check(df, ind=None, side_hint=None):
             f786 = swing_hi - FIB_LOW * (swing_hi - swing_lo)
             zone_type = "golden_top"
         
-        last_close = float(c.iloc[-1])
+        last_close = last_val(c)
         in_zone = (f618 <= last_close <= f786) if side == "down" else (f786 <= last_close <= f618)
         
         if not in_zone:
             return {"ok": False, "score": 0.0, "zone": None, "reasons": [f"price_not_in_zone {last_close:.6f} vs [{f618:.6f},{f786:.6f}]"]}
         
         # الشروط المساعدة
-        current_high = float(h.iloc[-1])
-        current_low = float(l.iloc[-1])
-        current_open = float(o.iloc[-1])
+        current_high = last_val(h)
+        current_low = last_val(l)
+        current_open = last_val(o)
         
         body, up_wick, low_wick = _body_wicks_gz(current_high, current_low, current_open, last_close)
         
         # حجم التداول
         vol_ma = v.rolling(VOL_MA_LEN).mean().iloc[-1]
-        vol_ok = float(v.iloc[-1]) >= vol_ma * 0.9  # تخفيف الشرط قليلاً
+        vol_ok = last_val(v) >= vol_ma * 0.9  # تخفيف الشرط قليلاً
         
         # RSI
         rsi_series = _rsi_fallback_gz(c, RSI_LEN_GZ)
         rsi_ma_series = _ema_gz(rsi_series, RSI_MA_LEN_GZ)
-        rsi_last = float(rsi_series.iloc[-1])
-        rsi_ma_last = float(rsi_ma_series.iloc[-1])
+        rsi_last = last_val(rsi_series)
+        rsi_ma_last = last_val(rsi_ma_series)
         
         # ADX من المؤشرات المحسوبة مسبقاً
         adx = ind.get('adx', 0) if ind else 0
@@ -1298,7 +1322,7 @@ def ultimate_council_professional(df):
     """مجلس الإدارة المحترف مع SMC والمؤشرات المتقدمة"""
     try:
         # البيانات الأساسية
-        current_price = float(df['close'].iloc[-1])
+        current_price = last_val(df['close'])
         ind = compute_indicators(df)
         rsi_ctx = rsi_ma_context(df)
         candles = compute_candles(df)
@@ -1704,7 +1728,7 @@ def execute_professional_trade(side, price, qty, council_data):
         if ob['low'] <= current_price <= ob['high']:
             ob_note = f" | 🔴 OB قوي: {ob['strength']:.1f}%"
             break
-    
+
     votes = council_data
     print(f"🎯 EXECUTE PROFESSIONAL: {side.upper()} {qty:.4f} @ {price:.6f} | "
           f"votes={votes['b']}/{votes['s']} score={votes['score_b']:.1f}/{votes['score_s']:.1f}"
@@ -1931,10 +1955,10 @@ def compute_flow_metrics(df):
         cvd_ma = cvd.rolling(CVD_SMOOTH).mean()
         wnd = delta.tail(FLOW_WINDOW)
         mu = float(wnd.mean()); sd = float(wnd.std() or 1e-12)
-        z = float((wnd.iloc[-1] - mu) / sd)
-        trend = "up" if (cvd_ma.iloc[-1] - cvd_ma.iloc[-min(CVD_SMOOTH, len(cvd_ma))]) >= 0 else "down"
-        return {"ok": True, "delta_last": float(delta.iloc[-1]), "delta_mean": mu, "delta_z": z,
-                "cvd_last": float(cvd.iloc[-1]), "cvd_trend": trend, "spike": abs(z) >= FLOW_SPIKE_Z}
+        z = float((last_val(wnd) - mu) / sd)
+        trend = "up" if (last_val(cvd_ma) - safe_iloc(cvd_ma, -min(CVD_SMOOTH, len(cvd_ma)))) >= 0 else "down"
+        return {"ok": True, "delta_last": last_val(delta), "delta_mean": mu, "delta_z": z,
+                "cvd_last": last_val(cvd), "cvd_trend": trend, "spike": abs(z) >= FLOW_SPIKE_Z}
     except Exception as e:
         return {"ok": False, "why": str(e)}
 
@@ -1947,7 +1971,7 @@ def emit_snapshots_with_smc(exchange, symbol, df, balance_fn=None, pnl_fn=None):
         cv = ultimate_council_professional(df)  # استخدام المجلس المحترف
         mode = decide_strategy_mode(df)
         gz = golden_zone_check(df, {"adx": cv["ind"]["adx"]}, "buy" if cv["b"]>=cv["s"] else "sell")
-        current_price = float(df['close'].iloc[-1])
+        current_price = last_val(df['close'])
         footprint = advanced_footprint_analysis(df, current_price)
 
         bal = None; cpnl = None
@@ -2116,11 +2140,14 @@ def compute_indicators(df: pd.DataFrame):
     dx=(100*(plus_di-minus_di).abs()/(plus_di+minus_di).replace(0,1e-12)).fillna(0.0)
     adx=wilder_ema(dx, ADX_LEN)
 
-    i=len(df)-1
     return {
-        "rsi": float(rsi.iloc[i]), "plus_di": float(plus_di.iloc[i]),
-        "minus_di": float(minus_di.iloc[i]), "dx": float(dx.iloc[i]),
-        "adx": float(adx.iloc[i]), "atr": float(atr.iloc[i])
+        "rsi": last_val(rsi), 
+        "plus_di": last_val(plus_di),
+        "minus_di": last_val(minus_di), 
+        "dx": last_val(dx),
+        "adx": last_val(adx), 
+        "atr": last_val(atr),
+        "di_spread": abs(last_val(plus_di) - last_val(minus_di))
     }
 
 # =================== RANGE FILTER ===================
@@ -2152,14 +2179,14 @@ def rf_signal_live(df: pd.DataFrame):
     def _bps(a,b):
         try: return abs((a-b)/b)*10000.0
         except Exception: return 0.0
-    p_now = float(src.iloc[-1]); p_prev = float(src.iloc[-2])
-    f_now = float(filt.iloc[-1]); f_prev = float(filt.iloc[-2])
+    p_now = last_val(src); p_prev = safe_iloc(src, -2)
+    f_now = last_val(filt); f_prev = safe_iloc(filt, -2)
     long_flip  = (p_prev <= f_prev and p_now > f_now and _bps(p_now, f_now) >= RF_HYST_BPS)
     short_flip = (p_prev >= f_prev and p_now < f_now and _bps(p_now, f_now) >= RF_HYST_BPS)
     return {
         "time": int(df["time"].iloc[-1]), "price": p_now,
         "long": bool(long_flip), "short": bool(short_flip),
-        "filter": f_now, "hi": float(hi.iloc[-1]), "lo": float(lo.iloc[-1])
+        "filter": f_now, "hi": last_val(hi), "lo": last_val(lo)
     }
 
 # =================== STATE ===================
