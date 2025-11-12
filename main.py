@@ -2232,27 +2232,19 @@ def log_active_council_activity(council_data, decision, adjustment):
             
         print("─" * 80, flush=True)
 
-# =================== ENHANCED TRADE EXECUTION ===================
-
-def open_market_with_active_council(side, qty, price, council_data):
-    """فتح صفقة مع تفعيل المجلس النشط"""
-    success = open_market_enhanced(side, qty, price)
+# =================== PROFESSIONAL TRADE MANAGEMENT ===================
+def manage_after_entry_professional(df, ind, info):
+    """إدارة محترفة للمركز مع تحليل SMC والمجلس النشط"""
+    if not STATE["open"]:
+        return
+        
+    current_price = info["price"]
     
-    if success:
-        # تفعيل أنظمة التتبع
-        active_tracker.start_trade(side, price, council_data)
-        
-        # إعداد محسن الأرباح
-        base_targets = [0.6, 1.2, 2.0, 3.0]  # أهداف أساسية محسنة
-        profit_optimizer.setup_trade(side, price, base_targets)
-        
-        # تحديث الحالة
-        STATE["active_council_enabled"] = True
-        STATE["profit_optimizer"] = profit_optimizer
-        
-        log_g(f"✅ فتح صفقة مع المجلس النشط - الأهداف: {base_targets}")
-        
-    return success
+    # استخدام الإدارة المعززة بالمجلس النشط
+    manage_after_entry_with_active_council(df, STATE, current_price)
+
+# استبدال إدارة الصفقات بالنظام المحترف
+manage_after_entry = manage_after_entry_professional
 
 # =================== PROFESSIONAL COUNCIL WITH SMC ===================
 def ultimate_council_professional(df):
@@ -2541,116 +2533,7 @@ def ultimate_council_professional(df):
         log_w(f"ultimate_council_professional error: {e}")
         return {"b":0, "s":0, "score_b":0.0, "score_s":0.0, "logs":[], "ind":{}, "candles":{}}
 
-# =================== PROFESSIONAL TRADE MANAGEMENT ===================
-def professional_trade_management(df, state, current_price):
-    """إدارة صفقات محترفة مع جني أرباح ديناميكي"""
-    if not state["open"] or state["qty"] <= 0:
-        return {"action": "hold", "reason": "لا توجد صفقة مفتوحة"}
-    
-    entry = state["entry"]
-    side = state["side"]
-    qty = state["qty"]
-    
-    # حساب الربح/الخسارة
-    unrealized_pnl_pct = (current_price - entry) / entry * 100 * (1 if side == "long" else -1)
-    
-    # تحليل السوق الحالي
-    market_structure = detect_market_structure(df)
-    advanced_momentum = compute_advanced_momentum(df)
-    macd = compute_macd(df)
-    
-    # تحديد أهداف الربح الديناميكية بناءً على ظروف السوق
-    if market_structure["trend"] == "strong_bullish" and side == "long":
-        # في اتجاه صاعد قوي - أهداف أعلى
-        tp_levels = [1.0, 2.0, 3.5]
-        tp_fractions = [0.25, 0.35, 0.40]
-    elif market_structure["trend"] == "strong_bearish" and side == "short":
-        # في اتجاه هابط قوي - أهداف أعلى
-        tp_levels = [1.0, 2.0, 3.5]
-        tp_fractions = [0.25, 0.35, 0.40]
-    elif advanced_momentum["strength"] > 2.0:
-        # زخم قوي - أهداف متوسطة
-        tp_levels = [0.8, 1.5, 2.5]
-        tp_fractions = [0.3, 0.3, 0.4]
-    else:
-        # ظروف عادية - أهداف محافظة
-        tp_levels = [0.6, 1.2, 2.0]
-        tp_fractions = [0.4, 0.3, 0.3]
-    
-    # جني الأرباح عند المستويات
-    achieved_tps = state.get("profit_targets_achieved", 0)
-    
-    if achieved_tps < len(tp_levels) and unrealized_pnl_pct >= tp_levels[achieved_tps]:
-        close_fraction = tp_fractions[achieved_tps]
-        return {
-            "action": "partial_close",
-            "reason": f"جني أرباح عند المستوى {achieved_tps + 1} ({tp_levels[achieved_tps]}%)",
-            "close_fraction": close_fraction,
-            "tp_level": tp_levels[achieved_tps],
-            "new_achieved_tps": achieved_tps + 1
-        }
-    
-    # وقف الخسارة المتحرك الذكي
-    if unrealized_pnl_pct > 0.5:  # بدء التريل بعد تحقيق ربح 0.5%
-        atr = compute_indicators(df).get('atr', 0.001)
-        
-        if side == "long":
-            # في الاتجاه الصاعد، استخدم تريل أكثر مرونة
-            trail_distance = atr * (1.2 if unrealized_pnl_pct < 1.5 else 0.8)
-            new_trail = current_price - trail_distance
-        else:
-            # في الاتجاه الهابط، استخدم تريل أكثر مرونة
-            trail_distance = atr * (1.2 if unrealized_pnl_pct < 1.5 else 0.8)
-            new_trail = current_price + trail_distance
-        
-        # تحديث التريل فقط إذا كان أفضل
-        if state.get("trail") is None:
-            state["trail"] = new_trail
-        elif (side == "long" and new_trail > state["trail"]) or \
-             (side == "short" and new_trail < state["trail"]):
-            state["trail"] = new_trail
-        
-        # التحقق من التريل
-        if state.get("trail"):
-            if (side == "long" and current_price <= state["trail"]) or \
-               (side == "short" and current_price >= state["trail"]):
-                return {
-                    "action": "close", 
-                    "reason": "وقف خسارة متحرك محسن",
-                    "trail_price": state["trail"],
-                    "pnl_pct": unrealized_pnl_pct
-                }
-    
-    # إغلاق استباقي عند علامات الانعكاس
-    if unrealized_pnl_pct > 1.0:  # فقط إذا كان هناك ربح
-        reversal_signals = 0
-        
-        # MACD انعكاس
-        if (side == "long" and macd["crossover"] == "bearish") or \
-           (side == "short" and macd["crossover"] == "bullish"):
-            reversal_signals += 1
-        
-        # تغير هيكل السوق
-        if (side == "long" and market_structure["choch_bearish"]) or \
-           (side == "short" and market_structure["choch_bullish"]):
-            reversal_signals += 1
-        
-        # فقدان الزخم
-        if (side == "long" and advanced_momentum.get("trend") == "bearish") or \
-           (side == "short" and advanced_momentum.get("trend") == "bullish"):
-            reversal_signals += 1
-        
-        if reversal_signals >= 2:
-            return {
-                "action": "close", 
-                "reason": "انعكاس متعدد المؤشرات",
-                "reversal_signals": reversal_signals,
-                "pnl_pct": unrealized_pnl_pct
-            }
-    
-    return {"action": "hold", "reason": "الاستمرار في الصفقة"}
-
-# =================== PROFESSIONAL EXECUTION ===================
+# =================== PROFESSIONAL TRADE EXECUTION ===================
 def execute_professional_trade(side, price, qty, council_data):
     """تنفيذ صفقات محترف مع تحليل متقدم"""
     if not EXECUTE_ORDERS or DRY_RUN:
@@ -2707,6 +2590,28 @@ def execute_professional_trade(side, price, qty, council_data):
     except Exception as e:
         log_e(f"❌ EXECUTION FAILED: {e}")
         return False
+
+# =================== ENHANCED TRADE EXECUTION ===================
+
+def open_market_with_active_council(side, qty, price, council_data):
+    """فتح صفقة مع تفعيل المجلس النشط"""
+    success = open_market_enhanced(side, qty, price)
+    
+    if success:
+        # تفعيل أنظمة التتبع
+        active_tracker.start_trade(side, price, council_data)
+        
+        # إعداد محسن الأرباح
+        base_targets = [0.6, 1.2, 2.0, 3.0]  # أهداف أساسية محسنة
+        profit_optimizer.setup_trade(side, price, base_targets)
+        
+        # تحديث الحالة
+        STATE["active_council_enabled"] = True
+        STATE["profit_optimizer"] = profit_optimizer
+        
+        log_g(f"✅ فتح صفقة مع المجلس النشط - الأهداف: {base_targets}")
+        
+    return success
 
 # =================== POSITION RECOVERY ===================
 def _normalize_side(pos):
@@ -3257,117 +3162,6 @@ def _reset_after_close(reason, prev_side=None):
     logging.info(f"AFTER_CLOSE waiting_for={wait_for_next_signal_side}")
 
 # =================== ENHANCED TRADE MANAGEMENT ===================
-def manage_after_entry_enhanced(df, ind, info):
-    """إدارة محسنة للمركز مع خروج ذكي حسب النمط"""
-    if not STATE["open"] or STATE["qty"] <= 0:
-        return
-
-    px = info["price"]
-    entry = STATE["entry"]
-    side = STATE["side"]
-    qty = STATE["qty"]
-    mode = STATE.get("mode", "trend")
-    
-    pnl_pct = (px - entry) / entry * 100 * (1 if side == "long" else -1)
-    STATE["pnl"] = pnl_pct
-    
-    if pnl_pct > STATE["highest_profit_pct"]:
-        STATE["highest_profit_pct"] = pnl_pct
-
-    snap = emit_snapshots_with_smc(ex, SYMBOL, df)
-    gz = snap["gz"]
-    
-    exit_signal = smart_exit_guard_with_smc(STATE, df, ind, snap["flow"], snap["bm"], 
-                                 px, pnl_pct/100, mode, side, entry, gz)
-    
-    if exit_signal["log"]:
-        print(f"🔔 {exit_signal['log']}", flush=True)
-
-    if exit_signal["action"] == "partial" and not STATE.get("partial_taken"):
-        partial_qty = safe_qty(qty * exit_signal.get("qty_pct", 0.3))
-        if partial_qty > 0:
-            close_side = "sell" if side == "long" else "buy"
-            if MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN:
-                try:
-                    params = exchange_specific_params(close_side, is_close=True)
-                    ex.create_order(SYMBOL, "market", close_side, partial_qty, None, params)
-                    log_g(f"✅ PARTIAL CLOSE: {partial_qty:.4f} | {exit_signal['why']}")
-                    STATE["partial_taken"] = True
-                    STATE["qty"] = safe_qty(qty - partial_qty)
-                except Exception as e:
-                    log_e(f"❌ Partial close failed: {e}")
-            else:
-                log_i(f"DRY_RUN: Partial close {partial_qty:.4f}")
-    
-    elif exit_signal["action"] == "tighten" and not STATE.get("trail_tightened"):
-        STATE["trail_tightened"] = True
-        STATE["trail"] = None
-        log_i(f"🔄 TRAIL TIGHTENED: {exit_signal['why']}")
-    
-    elif exit_signal["action"] == "close":
-        log_w(f"🚨 SMART EXIT: {exit_signal['why']}")
-        close_market_strict(f"smart_exit_{exit_signal['why']}")
-        return
-
-    current_atr = ind.get("atr", 0.0)
-    tp1_pct = TP1_PCT_BASE/100.0
-    be_activate_pct = BREAKEVEN_AFTER/100.0
-    trail_activate_pct = TRAIL_ACTIVATE_PCT/100.0
-    atr_trail_mult = ATR_TRAIL_MULT
-
-    if not STATE.get("tp1_done") and pnl_pct/100 >= tp1_pct:
-        close_fraction = TP1_CLOSE_FRAC
-        close_qty = safe_qty(STATE["qty"] * close_fraction)
-        if close_qty > 0:
-            close_side = "sell" if STATE["side"] == "long" else "buy"
-            if MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN:
-                try:
-                    params = exchange_specific_params(close_side, is_close=True)
-                    ex.create_order(SYMBOL, "market", close_side, close_qty, None, params)
-                    log_g(f"✅ TP1 HIT: closed {close_fraction*100}%")
-                except Exception as e:
-                    log_e(f"❌ TP1 close failed: {e}")
-            STATE["qty"] = safe_qty(STATE["qty"] - close_qty)
-            STATE["tp1_done"] = True
-            STATE["profit_targets_achieved"] += 1
-
-    if not STATE.get("breakeven_armed") and pnl_pct/100 >= be_activate_pct:
-        STATE["breakeven_armed"] = True
-        STATE["breakeven"] = entry
-        log_i("BREAKEVEN ARMED")
-
-    if not STATE.get("trail_active") and pnl_pct/100 >= trail_activate_pct:
-        STATE["trail_active"] = True
-        log_i("TRAIL ACTIVATED")
-
-    if STATE.get("trail_active"):
-        trail_mult = TRAIL_TIGHT_MULT if STATE.get("trail_tightened") else atr_trail_mult
-        if side == "long":
-            new_trail = px - (current_atr * trail_mult)
-            if STATE.get("trail") is None or new_trail > STATE["trail"]:
-                STATE["trail"] = new_trail
-        else:
-            new_trail = px + (current_atr * trail_mult)
-            if STATE.get("trail") is None or new_trail < STATE["trail"]:
-                STATE["trail"] = new_trail
-
-    if STATE.get("trail"):
-        if (side == "long" and px <= STATE["trail"]) or (side == "short" and px >= STATE["trail"]):
-            log_w(f"TRAIL STOP: {px} vs trail {STATE['trail']}")
-            close_market_strict("trail_stop")
-
-    if STATE.get("breakeven"):
-        if (side == "long" and px <= STATE["breakeven"]) or (side == "short" and px >= STATE["breakeven"]):
-            log_w(f"BREAKEVEN STOP: {px} vs breakeven {STATE['breakeven']}")
-            close_market_strict("breakeven_stop")
-
-    if STATE["qty"] <= FINAL_CHUNK_QTY:
-        log_w(f"DUST GUARD: qty {STATE['qty']} <= {FINAL_CHUNK_QTY}, closing...")
-        close_market_strict("dust_guard")
-
-# استبدال إدارة الصفقات بالنظام المحترف
-manage_after_entry = manage_after_entry_with_active_council
-
 def smart_exit_guard_with_smc(state, df, ind, flow, bm, now_price, pnl_pct, mode, side, entry_price, gz=None):
     """خروج ذكي مع تحليل SMC المتقدم"""
     # التحليل الأساسي
