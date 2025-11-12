@@ -22,66 +22,6 @@ try:
 except Exception:
     def colored(t,*a,**k): return t
 
-# ================== STATIC CONFIG (overrides ENV) ==================
-CONFIG = {
-    # تشغيل/تعطيل Override (لو False هيقرأ من ENV كالعادة)
-    "OVERRIDE": True,
-
-    # السوق والمنصة
-    "EXCHANGE": "bingx",           
-    "SYMBOL": "SUI/USDT:USDT",   
-    "INTERVAL": "15m",
-
-    # إدارة رأس المال
-    "LEVERAGE": 10,
-    "RISK_ALLOC": 0.60,
-
-    # وضع المراكز
-    "POSITION_MODE": "oneway",
-
-    # Range Filter
-    "RF_PERIOD": 20,
-    "RF_MULT": 3.5,
-    "RF_LIVE_ONLY": True,
-    "RF_HYST_BPS": 8.0,
-
-    # Footprint Management
-    "FP_MGMT_ENABLE": 1,
-    "FP_MGMT_WEIGHT": 1.6,
-    "FP_MGMT_DELTA_Z": 1.2,
-    "FP_MGMT_VOL_Z": 1.0,
-    "FP_MGMT_ABSORB_WICK_PCT": 55,
-    "FP_MGMT_TRAP_TOL_BPS": 8,
-    "FP_MGMT_HOLD_SCORE": 1.8,
-    "FP_MGMT_TIGHTEN_SCORE": 1.6,
-    "FP_MGMT_PARTIAL_SCORE": 2.0,
-    "FP_MGMT_STRICT_SCORE": 2.6,
-
-    # عتبات المجلس
-    "ULTIMATE_MIN_CONFIDENCE": 7.0,
-
-    # أخرى
-    "FINAL_CHUNK_QTY": 2.0,
-    "MAX_SPREAD_BPS": 6.0,
-}
-# ===================================================================
-
-# دالة القراءة من CONFIG أولاً ثم ENV
-def cfg(name, env_key=None, cast=lambda v: v, default=None):
-    """CONFIG > ENV > default"""
-    if CONFIG.get("OVERRIDE", False) and (name in CONFIG):
-        val = CONFIG[name]
-        return cast(val) if val is not None else cast(default)
-    
-    if env_key:
-        env_val = os.getenv(env_key)
-        if env_val is not None and env_val != "":
-            try:
-                return cast(env_val)
-            except Exception:
-                pass
-    return cast(default)
-
 # =================== FOOTPRINT MANAGEMENT PATCH ===================
 def _zscore(s: pd.Series, win=20):
     mu = s.rolling(win, min_periods=1).mean()
@@ -246,7 +186,7 @@ def apply_footprint_management(df, current_side, state):
 
 # =================== ENV / MODE ===================
 # Exchange Selection
-EXCHANGE_NAME = cfg("EXCHANGE", "EXCHANGE", str, "bingx").lower()
+EXCHANGE_NAME = os.getenv("EXCHANGE", "bingx").lower()
 
 # API Keys - Multi-Exchange Support
 if EXCHANGE_NAME == "bybit":
@@ -288,16 +228,16 @@ FLOW_SPIKE_Z = 1.60
 CVD_SMOOTH = 8
 
 # === Footprint Management Settings ===
-FP_MGMT_ENABLE = cfg("FP_MGMT_ENABLE", "FP_MGMT_ENABLE", int, 1)
-FP_MGMT_WEIGHT = cfg("FP_MGMT_WEIGHT", "FP_MGMT_WEIGHT", float, 1.6)
-FP_MGMT_DELTA_Z = cfg("FP_MGMT_DELTA_Z", "FP_MGMT_DELTA_Z", float, 1.2)
-FP_MGMT_VOL_Z = cfg("FP_MGMT_VOL_Z", "FP_MGMT_VOL_Z", float, 1.0)
-FP_MGMT_ABSORB_WICK_PCT = cfg("FP_MGMT_ABSORB_WICK_PCT", "FP_MGMT_ABSORB_WICK_PCT", float, 55)
-FP_MGMT_TRAP_TOL_BPS = cfg("FP_MGMT_TRAP_TOL_BPS", "FP_MGMT_TRAP_TOL_BPS", float, 8)
-FP_MGMT_HOLD_SCORE = cfg("FP_MGMT_HOLD_SCORE", "FP_MGMT_HOLD_SCORE", float, 1.8)
-FP_MGMT_TIGHTEN_SCORE = cfg("FP_MGMT_TIGHTEN_SCORE", "FP_MGMT_TIGHTEN_SCORE", float, 1.6)
-FP_MGMT_PARTIAL_SCORE = cfg("FP_MGMT_PARTIAL_SCORE", "FP_MGMT_PARTIAL_SCORE", float, 2.0)
-FP_MGMT_STRICT_SCORE = cfg("FP_MGMT_STRICT_SCORE", "FP_MGMT_STRICT_SCORE", float, 2.6)
+FP_MGMT_ENABLE = int(os.getenv("FP_MGMT_ENABLE", "1"))
+FP_MGMT_WEIGHT = float(os.getenv("FP_MGMT_WEIGHT", "1.6"))
+FP_MGMT_DELTA_Z = float(os.getenv("FP_MGMT_DELTA_Z", "1.2"))
+FP_MGMT_VOL_Z = float(os.getenv("FP_MGMT_VOL_Z", "1.0"))
+FP_MGMT_ABSORB_WICK_PCT = float(os.getenv("FP_MGMT_ABSORB_WICK_PCT", "55"))
+FP_MGMT_TRAP_TOL_BPS = float(os.getenv("FP_MGMT_TRAP_TOL_BPS", "8"))
+FP_MGMT_HOLD_SCORE = float(os.getenv("FP_MGMT_HOLD_SCORE", "1.8"))
+FP_MGMT_TIGHTEN_SCORE = float(os.getenv("FP_MGMT_TIGHTEN_SCORE", "1.6"))
+FP_MGMT_PARTIAL_SCORE = float(os.getenv("FP_MGMT_PARTIAL_SCORE", "2.0"))
+FP_MGMT_STRICT_SCORE = float(os.getenv("FP_MGMT_STRICT_SCORE", "2.6"))
 
 # =================== SMART MONEY CONCEPTS SETTINGS ===================
 FVG_THRESHOLD = 0.1  # Minimum FVG size percentage
@@ -312,18 +252,18 @@ ABSORPTION_RATIO = 0.65
 EFFICIENCY_THRESHOLD = 0.85
 
 # =================== SETTINGS ===================
-SYMBOL     = cfg("SYMBOL", "SYMBOL", str, "SUI/USDT:USDT")
-INTERVAL   = cfg("INTERVAL", "INTERVAL", str, "15m")
-LEVERAGE   = cfg("LEVERAGE", "LEVERAGE", int, 10)
-RISK_ALLOC = cfg("RISK_ALLOC", "RISK_ALLOC", float, 0.60)
-POSITION_MODE = cfg("POSITION_MODE", "POSITION_MODE", str, "oneway")
+SYMBOL     = os.getenv("SYMBOL", "SUI/USDT:USDT")
+INTERVAL   = os.getenv("INTERVAL", "15m")
+LEVERAGE   = int(os.getenv("LEVERAGE", 10))
+RISK_ALLOC = float(os.getenv("RISK_ALLOC", 0.60))
+POSITION_MODE = os.getenv("POSITION_MODE", "oneway")
 
 # RF Settings - Optimized for SUI
 RF_SOURCE = "close"
-RF_PERIOD = cfg("RF_PERIOD", "RF_PERIOD", int, 18)
-RF_MULT   = cfg("RF_MULT", "RF_MULT", float, 3.0)
-RF_LIVE_ONLY = cfg("RF_LIVE_ONLY", "RF_LIVE_ONLY", lambda v: str(v).lower() in ("1","true","yes"), True)
-RF_HYST_BPS  = cfg("RF_HYST_BPS", "RF_HYST_BPS", float, 6.0)
+RF_PERIOD = int(os.getenv("RF_PERIOD", 18))
+RF_MULT   = float(os.getenv("RF_MULT", 3.0))
+RF_LIVE_ONLY = True
+RF_HYST_BPS  = 6.0
 
 # Indicators
 RSI_LEN = 14
@@ -331,7 +271,7 @@ ADX_LEN = 14
 ATR_LEN = 14
 
 ENTRY_RF_ONLY = False
-MAX_SPREAD_BPS = cfg("MAX_SPREAD_BPS", "MAX_SPREAD_BPS", float, 6.0)
+MAX_SPREAD_BPS = float(os.getenv("MAX_SPREAD_BPS", 6.0))
 
 # Dynamic TP / trail - Optimized for SUI
 TP1_PCT_BASE       = 0.45
@@ -344,7 +284,7 @@ TREND_TPS       = [0.50, 1.00, 1.80]
 TREND_TP_FRACS  = [0.30, 0.30, 0.20]
 
 # Dust guard
-FINAL_CHUNK_QTY = cfg("FINAL_CHUNK_QTY", "FINAL_CHUNK_QTY", float, 2.0)
+FINAL_CHUNK_QTY = float(os.getenv("FINAL_CHUNK_QTY", 2.0))
 RESIDUAL_MIN_QTY = float(os.getenv("RESIDUAL_MIN_QTY", 10.0))
 
 # Strict close
@@ -401,7 +341,7 @@ COOLDOWN_SECS_AFTER_CLOSE = 60
 ADX_GATE = 17
 
 # ==== ULTIMATE COUNCIL SETTINGS ====
-ULTIMATE_MIN_CONFIDENCE = cfg("ULTIMATE_MIN_CONFIDENCE", "ULTIMATE_MIN_CONFIDENCE", float, 7.0)
+ULTIMATE_MIN_CONFIDENCE = 7.0  # Reduced slightly due to more indicators
 VOLUME_MOMENTUM_PERIOD = 20
 STOCH_RSI_PERIOD = 14
 DYNAMIC_PIVOT_PERIOD = 20
@@ -417,43 +357,11 @@ def log_e(msg): print(f"❌ {msg}", flush=True)
 
 def log_banner(text): print(f"\n{'—'*12} {text} {'—'*12}\n", flush=True)
 
-def json_sanitize(obj):
-    """تحويل الكائنات غير القابلة للتسلسل JSON إلى أنواع قابلة للتسلسل"""
-    if obj is None or isinstance(obj, (str, int, float, bool)):
-        return obj
-    
-    # numpy types
-    if hasattr(obj, 'dtype'):
-        if np.issubdtype(obj.dtype, np.integer):
-            return int(obj)
-        elif np.issubdtype(obj.dtype, np.floating):
-            return float(obj)
-        elif np.issubdtype(obj.dtype, np.bool_):
-            return bool(obj)
-    
-    # pandas Series
-    if hasattr(obj, 'iloc'):
-        return float(obj.iloc[-1]) if len(obj) > 0 else 0.0
-    
-    # dict
-    if isinstance(obj, dict):
-        return {str(k): json_sanitize(v) for k, v in obj.items()}
-    
-    # list/tuple
-    if isinstance(obj, (list, tuple)):
-        return [json_sanitize(v) for v in obj]
-    
-    # default: convert to string
-    return str(obj)
-
-def save_state_safe(state: dict):
-    """حفظ آمن للحالة مع معالجة جميع أنواع البيانات"""
+def save_state(state: dict):
     try:
         state["ts"] = int(time.time())
-        sanitized_state = json_sanitize(state)
-        
         with open(STATE_PATH, "w", encoding="utf-8") as f:
-            json.dump(sanitized_state, f, ensure_ascii=False, indent=2)
+            json.dump(state, f, ensure_ascii=False, indent=2)
         log_i(f"state saved → {STATE_PATH}")
     except Exception as e:
         log_w(f"state save failed: {e}")
@@ -466,9 +374,6 @@ def load_state() -> dict:
     except Exception as e:
         log_w(f"state load failed: {e}")
     return {}
-
-# استبدال دالة save_state القديمة
-save_state = save_state_safe
 
 # =================== EXCHANGE FACTORY ===================
 def make_ex():
@@ -639,18 +544,11 @@ def verify_execution_environment():
     print(f"🎯 PROFESSIONAL COUNCIL: min_confidence={ULTIMATE_MIN_CONFIDENCE}", flush=True)
     print(f"📈 ADVANCED INDICATORS: SMC + MACD + VWAP + Volume Momentum", flush=True)
     print(f"👣 SMART MONEY CONCEPTS: BOS + Order Blocks + FVG + Liquidity Analysis", flush=True)
-    print(f"⚡ RF SETTINGS: period={RF_PERIOD} | mult={RF_MULT}", flush=True)
-    
-    # عرض إعدادات CONFIG
-    print(f"🎛️  CONFIG OVERRIDE: {CONFIG.get('OVERRIDE', False)}", flush=True)
-    if CONFIG.get("OVERRIDE", False):
-        print(f"   ↳ MODE: STATIC CONFIG", flush=True)
-    else:
-        print(f"   ↳ MODE: ENVIRONMENT VARIABLES", flush=True)
+    print(f"⚡ RF SETTINGS: period={RF_PERIOD} | mult={RF_MULT} (SUI Optimized)", flush=True)
     
     # Footprint Management
     if FP_MGMT_ENABLED:
-        print(f"👣 FOOTPRINT MANAGEMENT: ENABLED", flush=True)
+        print(f"👣 FOOTPRINT MANAGEMENT: ENABLED (للإدارة فقط)", flush=True)
         print(f"   ↳ الوزن: {FP_MGMT_WEIGHT} | Delta-Z: {FP_MGMT_DELTA_Z}", flush=True)
     else:
         print(f"👣 FOOTPRINT MANAGEMENT: DISABLED", flush=True)
@@ -933,7 +831,7 @@ def compute_vwap(df):
         return {"vwap": 0, "deviation": 0, "signal": "neutral", "price_above_vwap": False}
     
     high = df['high'].astype(float)
-    low = df['low'].astype(float)
+    low = df['low'].astype(float)  # تم التصحيح هنا
     close = df['close'].astype(float)
     volume = df['volume'].astype(float)
     
@@ -1865,66 +1763,6 @@ def ultimate_council_professional(df):
         return {"b":0, "s":0, "score_b":0.0, "score_s":0.0, "logs":[], "ind":{}, "candles":{}}
 
 # =================== PROFESSIONAL TRADE MANAGEMENT ===================
-def _candle_fp_post_entry_boost(position_side, df, features, last_price, trail, tp_layers, log_func):
-    """إدارة الصفقة بناءً على تحليل الشموع و Footprint بعد الدخول"""
-    if len(df) < 3:
-        return trail, tp_layers, False
-    
-    try:
-        # تحليل الشموع الحالية
-        current_candle = df.iloc[-1]
-        prev_candle = df.iloc[-2]
-        
-        o, h, l, c = (float(current_candle['open']), float(current_candle['high']), 
-                      float(current_candle['low']), float(current_candle['close']))
-        po, ph, pl, pc = (float(prev_candle['open']), float(prev_candle['high']), 
-                         float(prev_candle['low']), float(prev_candle['close']))
-        
-        # حساب قوة الشمعة
-        body = abs(c - o)
-        range_candle = h - l
-        body_ratio = body / range_candle if range_candle > 0 else 0
-        
-        # تحليل Footprint للإدارة
-        fp_metrics = footprint_mgmt_metrics(df.iloc[:-1])  # بدون الشمعة الحية
-        last_fp = fp_metrics.iloc[-1] if len(fp_metrics) > 0 else {}
-        
-        # قرارات الإدارة
-        hold_tp = False
-        tighten_trail = False
-        
-        # تأجيل جني الأرباح عند الشموع القوية في اتجاه الصفقة
-        if body_ratio > 0.7:  # شمعة ماروبوزو
-            if (position_side == "long" and c > o) or (position_side == "short" and c < o):
-                hold_tp = True
-                log_func("🟡 تأجيل جني الأرباح - شمعة قوية في اتجاه الصفقة")
-        
-        # تشديد وقف الخسارة عند علامات الامتصاص
-        if position_side == "long" and last_fp.get('abs_top', 0) == 1:
-            tighten_trail = True
-            log_func("🟡 تشديد الوقف - امتصاص عند المقاومة")
-        elif position_side == "short" and last_fp.get('abs_bot', 0) == 1:
-            tighten_trail = True
-            log_func("🟡 تشديد الوقف - امتصاص عند الدعم")
-        
-        # تطبيق القرارات
-        if hold_tp and tp_layers:
-            # تأجيل جني الأرباح بزيادة المستويات
-            tp_layers = [tp * 1.2 for tp in tp_layers]  # زيادة الأهداف 20%
-        
-        if tighten_trail and trail is not None:
-            # تشديد وقف الخسارة
-            if position_side == "long":
-                trail = max(trail, last_price * 0.995)  # أقرب بـ 0.5%
-            else:
-                trail = min(trail, last_price * 1.005)
-        
-        return trail, tp_layers, hold_tp or tighten_trail
-        
-    except Exception as e:
-        log_func(f"⚠️ خطأ في إدارة الصفقة بالشموع: {e}")
-        return trail, tp_layers, False
-
 def professional_trade_management(df, state, current_price):
     """إدارة صفقات محترفة مع جني أرباح ديناميكي"""
     if not state["open"] or state["qty"] <= 0:
@@ -2697,20 +2535,6 @@ def manage_after_entry_professional(df, ind, info):
             close_market_strict(f"fp_mgmt_{fp_signal.get('tags', ['strong_signal'])[0]}")
             return
     
-    # ===== إدارة الصفقة بالشموع =====
-    if CONFIG.get("HOLD_TP_ON_STRONG_CANDLE", True):
-        trail = STATE.get("trail")
-        tp_layers = TREND_TPS if STATE.get("mode") == "trend" else [SCALP_TP1]
-        
-        # استدعاء إدارة الصفقة بالشموع
-        new_trail, new_tp_layers, managed = _candle_fp_post_entry_boost(
-            current_side, df, {}, current_price, trail, tp_layers, log_i
-        )
-        
-        if managed:
-            STATE["trail"] = new_trail
-            # يمكن تحديث tp_layers هنا إذا كنت تستخدمها
-    
     # ===== الاستمرار في الإدارة الأساسية =====
     management_signal = professional_trade_management(df, STATE, current_price)
     
@@ -3179,16 +3003,6 @@ emit_snapshots = emit_snapshots_with_smc
 # =================== BOOT ===================
 if __name__ == "__main__":
     log_banner("SUI COUNCIL PROFESSIONAL BOT - SMART MONEY CONCEPTS + FOOTPRINT MANAGEMENT")
-    
-    # طباعة إعدادات CONFIG
-    print(f"\n🎛️  CONFIG SUMMARY:", flush=True)
-    print(f"   OVERRIDE: {CONFIG.get('OVERRIDE', False)}", flush=True)
-    print(f"   EXCHANGE: {EXCHANGE_NAME} | SYMBOL: {SYMBOL} | INTERVAL: {INTERVAL}", flush=True)
-    print(f"   LEVERAGE: {LEVERAGE}x | RISK: {RISK_ALLOC*100:.0f}%", flush=True)
-    print(f"   RF: period={RF_PERIOD} | mult={RF_MULT}", flush=True)
-    print(f"   COUNCIL: min_confidence={ULTIMATE_MIN_CONFIDENCE}", flush=True)
-    print(f"   FP_MGMT: {'ENABLED' if FP_MGMT_ENABLE else 'DISABLED'}", flush=True)
-    
     state = load_state() or {}
     state.setdefault("in_position", False)
 
