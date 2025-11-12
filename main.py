@@ -854,7 +854,7 @@ def dynamic_trend_indicator(df, fast_period=10, slow_period=20, signal_period=9)
     if len(df) < slow_period + signal_period:
         return {"trend": "neutral", "momentum": 0, "signal": "hold", "ema_fast": 0, "ema_slow": 0}
     
-    close = df['close'].astype(float)
+    close = df['close'].ast(float)
     
     # متوسطات متحركة متعددة
     ema_fast = close.ewm(span=fast_period).mean()
@@ -1608,12 +1608,13 @@ def enhanced_professional_council(df):
                 "trade_mode": enhanced_trade_mode_detection(df),
                 "volatility": calculate_advanced_volatility(df),
                 "trend_strength": analyze_trend_strength(df)
-            }
+            },
+            "ind": basic_indicators  # إضافة المؤشرات الأساسية
         }
         
     except Exception as e:
         log_w(f"Enhanced council error: {e}")
-        return {"b": 0, "s": 0, "score_b": 0.0, "score_s": 0.0}
+        return {"b": 0, "s": 0, "score_b": 0.0, "score_s": 0.0, "ind": {}}
 
 def advanced_volume_analysis(df):
     """تحليل حجم متقدم"""
@@ -2677,12 +2678,12 @@ def execute_professional_trade(side, price, qty, council_data):
     
     for ob in order_blocks.get("bullish_ob", []):
         if ob['low'] <= current_price <= ob['high']:
-            ob_note = f" | 🟢 OB قوي: {ob['strength']:.1f}%"
+            ob_note = f" | 🟢 OB:{ob['strength']:.1f}%"
             break
     
     for ob in order_blocks.get("bearish_ob", []):
         if ob['low'] <= current_price <= ob['high']:
-            ob_note = f" | 🔴 OB قوي: {ob['strength']:.1f}%"
+            ob_note = f" | 🔴 OB:{ob['strength']:.1f}%"
             break
 
     votes = council_data
@@ -2924,11 +2925,14 @@ def emit_snapshots_with_smc(exchange, symbol, df, balance_fn=None, pnl_fn=None):
     try:
         bm = bookmap_snapshot(exchange, symbol)
         flow = compute_flow_metrics(df)
-        cv = enhanced_professional_council(df)  # استخدام المجلس المحسن
+        cv = enhanced_professional_council(df)
         mode = decide_strategy_mode(df)
         
-        # تمرير ind بشكل صحيح لـ golden_zone_check
-        gz = golden_zone_check(df, cv.get("ind", {}), "buy" if cv["b"]>=cv["s"] else "sell")
+        # حساب المؤشرات الأساسية بشكل منفصل لـ golden_zone_check
+        basic_indicators = compute_indicators(df)
+        
+        # تمرير ind بشكل صحيح لـ golden_zone_check - استخدام المؤشرات الأساسية
+        gz = golden_zone_check(df, basic_indicators, "buy" if cv["b"]>=cv["s"] else "sell")
         current_price = last_val(df['close'])
         footprint = advanced_footprint_analysis(df, current_price)
 
@@ -2976,10 +2980,12 @@ def emit_snapshots_with_smc(exchange, symbol, df, balance_fn=None, pnl_fn=None):
             fl_note = f"Flow: N/A ({flow.get('why')})"
 
         side_hint = "BUY" if cv["b"]>=cv["s"] else "SELL"
+        
+        # استخدام المؤشرات الأساسية في الداشبورد
         dash = (f"DASH → hint-{side_hint} | Council BUY({cv['b']},{cv['score_b']:.1f}) "
                 f"SELL({cv['s']},{cv['score_s']:.1f}) | "
-                f"RSI={cv['ind'].get('rsi',0):.1f} ADX={cv['ind'].get('adx',0):.1f} "
-                f"DI={cv['ind'].get('di_spread',0):.1f}{smc_note}{ob_note}")
+                f"RSI={basic_indicators.get('rsi',0):.1f} ADX={basic_indicators.get('adx',0):.1f} "
+                f"DI={basic_indicators.get('di_spread',0):.1f}{smc_note}{ob_note}")
 
         strat_icon = "⚡" if mode["mode"]=="scalp" else "📈" if mode["mode"]=="trend" else "ℹ️"
         strat = f"Strategy: {strat_icon} {mode['mode'].upper()}"
@@ -3003,17 +3009,17 @@ def emit_snapshots_with_smc(exchange, symbol, df, balance_fn=None, pnl_fn=None):
             bm_imb = bm['imbalance'] if bm and bm.get('ok') else 1.0
             
             print(f"🧠 SNAP PROFESSIONAL | {side_hint} | votes={cv['b']}/{cv['s']} score={cv['score_b']:.1f}/{cv['score_s']:.1f} "
-                  f"| ADX={cv['ind'].get('adx',0):.1f} DI={cv['ind'].get('di_spread',0):.1f} | "
+                  f"| ADX={basic_indicators.get('adx',0):.1f} DI={basic_indicators.get('di_spread',0):.1f} | "
                   f"z={flow_z:.2f} | imb={bm_imb:.2f}{smc_note}{ob_note}{gz_note}", 
                   flush=True)
             
             print("✅ PROFESSIONAL TRADING BOT LIVE", flush=True)
 
-        return {"bm": bm, "flow": flow, "cv": cv, "mode": mode, "gz": gz, "footprint": footprint, "wallet": wallet}
+        return {"bm": bm, "flow": flow, "cv": cv, "mode": mode, "gz": gz, "footprint": footprint, "wallet": wallet, "basic_indicators": basic_indicators}
     except Exception as e:
         print(f"🟨 Professional AddonLog error: {e}", flush=True)
         return {"bm": None, "flow": None, "cv": {"b":0,"s":0,"score_b":0.0,"score_s":0.0,"ind":{}},
-                "mode": {"mode":"n/a"}, "gz": None, "footprint": {}, "wallet": ""}
+                "mode": {"mode":"n/a"}, "gz": None, "footprint": {}, "wallet": "", "basic_indicators": {}}
 
 # =================== EXECUTION MANAGER ===================
 def open_market_enhanced(side, qty, price):
