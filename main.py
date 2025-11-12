@@ -5,7 +5,6 @@ RF Futures Bot — RF-LIVE ONLY (Multi-Exchange: BingX & Bybit)
 • Golden Entry + Golden Reversal + Wick Exhaustion + Smart Exit
 • Dynamic TP ladder + ATR-trailing + Volume Momentum + Liquidity Analysis
 • Professional Logging & Dashboard + Multi-Exchange Support
-• Footprint Management for Advanced Trade Management
 """
 
 import os, time, math, random, signal, sys, traceback, logging, json
@@ -21,104 +20,6 @@ try:
     from termcolor import colored
 except Exception:
     def colored(t,*a,**k): return t
-
-# =================== FOOTPRINT MANAGEMENT PATCH ===================
-def _zscore(s: pd.Series, win=20):
-    mu = s.rolling(win, min_periods=1).mean()
-    sd = s.rolling(win, min_periods=1).std().replace(0, np.nan)
-    return ((s - mu) / sd).fillna(0)
-
-def _prep_ranges(df: pd.DataFrame):
-    rng  = (df["high"] - df["low"]).replace(0, np.nan)
-    body = (df["close"] - df["open"]).abs()
-    df["uw_pct"] = ((df["high"] - df[["close","open"]].max(axis=1)) / rng * 100).fillna(0)
-    df["lw_pct"] = ((df[["close","open"]].min(axis=1) - df["low"]) / rng * 100).fillna(0)
-    df["dir"]    = np.where(df["close"] >= df["open"], "up", "down")
-    return df
-
-def footprint_mgmt_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """ يحسب قياسات Footprint على OHLCV مغلق — لا يحتاج Level2 """
-    df = _prep_ranges(df.copy())
-    df["delta_proxy"] = np.sign(df["close"] - df["open"]) * df["volume"]
-    df["delta_z"]     = _zscore(df["delta_proxy"], win=20)
-    df["vol_z"]       = _zscore(df["volume"], win=20)
-
-    wick    = float(os.getenv("FP_MGMT_ABSORB_WICK_PCT","55"))
-    vol_gate= float(os.getenv("FP_MGMT_VOL_Z","1.0"))
-    df["abs_top"] = ((df["uw_pct"]>=wick) & (df["close"]<df["open"]) & (df["vol_z"]>=vol_gate)).astype(int)
-    df["abs_bot"] = ((df["lw_pct"]>=wick) & (df["close"]>df["open"]) & (df["vol_z"]>=vol_gate)).astype(int)
-
-    tol     = float(os.getenv("FP_MGMT_TRAP_TOL_BPS","8"))/10000.0
-    hh      = df["high"].rolling(30, min_periods=2).max().shift(1)
-    ll      = df["low"].rolling(30, min_periods=2).min().shift(1)
-    df["trap_buy"]  = ((df["low"] < ll) & (df["close"] > (ll*(1+tol)))).astype(int)   # فخ بائعين → BUY
-    df["trap_sell"] = ((df["high"]> hh) & (df["close"] < (hh*(1-tol)))).astype(int)   # فخ مشترين → SELL
-    return df
-
-def footprint_mgmt_signal(row: pd.Series, side: str):
-    """ يرجّع (action, score, tags) لإدارة الصفقة فقط """
-    if int(os.getenv("FP_MGMT_ENABLE","1")) != 1:
-        return ("none", 0.0, ["fp_mgmt_off"])
-
-    W   = float(os.getenv("FP_MGMT_WEIGHT","1.6"))
-    dz  = float(row.get("delta_z",0.0))
-    vz  = float(row.get("vol_z",0.0))
-    dz_gate = float(os.getenv("FP_MGMT_DELTA_Z","1.2"))
-    vz_gate = float(os.getenv("FP_MGMT_VOL_Z","1.0"))
-
-    score_for, score_against = 0.0, 0.0
-    tags = []
-
-    # دلتا + حجم (قوة تدفّق)
-    if abs(dz) >= dz_gate and vz >= vz_gate:
-        if (dz>0 and side=="buy") or (dz<0 and side=="sell"):
-            score_for += (1.0 + min(abs(dz)/3.0, 1.0)) * W;  tags.append("delta_with")
-        else:
-            score_against += (1.0 + min(abs(dz)/3.0, 1.0)) * W; tags.append("delta_against")
-
-    # امتصاص
-    if side=="buy"  and row.get("abs_top",0)==1: score_against += 1.0*W; tags.append("absorption_top")
-    if side=="sell" and row.get("abs_bot",0)==1: score_against += 1.0*W; tags.append("absorption_bot")
-    if side=="buy"  and row.get("abs_bot",0)==1: score_for     += 0.8*W; tags.append("absorption_support")
-    if side=="sell" and row.get("abs_top",0)==1: score_for     += 0.8*W; tags.append("absorption_resist")
-
-    # فِخاخ
-    if side=="buy"  and row.get("trap_sell",0)==1: score_against += 0.9*W; tags.append("trap_sell")
-    if side=="sell" and row.get("trap_buy",0)==1:  score_against += 0.9*W; tags.append("trap_buy")
-    if side=="buy"  and row.get("trap_buy",0)==1:  score_for     += 0.6*W; tags.append("trap_buy_support")
-    if side=="sell" and row.get("trap_sell",0)==1: score_for     += 0.6*W; tags.append("trap_sell_resist")
-
-    # خريطة القرار
-    hold_thr    = float(os.getenv("FP_MGMT_HOLD_SCORE","1.8"))
-    tighten_thr = float(os.getenv("FP_MGMT_TIGHTEN_SCORE","1.6"))
-    partial_thr = float(os.getenv("FP_MGMT_PARTIAL_SCORE","2.0"))
-    strict_thr  = float(os.getenv("FP_MGMT_STRICT_SCORE","2.6"))
-
-    action = "none"
-    score  = round(max(score_for, score_against), 2)
-
-    if score_against >= strict_thr:   action = "close"
-    elif score_against >= partial_thr: action = "partial"
-    elif score_against >= tighten_thr: action = "tighten"
-    elif score_for    >= hold_thr:     action = "hold"
-
-    return (action, score, tags)
-
-# إعدادات Footprint Management
-FP_MGMT_SETTINGS = {
-    "enable": int(os.getenv("FP_MGMT_ENABLE", "1")),
-    "weight": float(os.getenv("FP_MGMT_WEIGHT", "1.6")),
-    "delta_z": float(os.getenv("FP_MGMT_DELTA_Z", "1.2")),
-    "vol_z": float(os.getenv("FP_MGMT_VOL_Z", "1.0")),
-    "absorb_wick_pct": float(os.getenv("FP_MGMT_ABSORB_WICK_PCT", "55")),
-    "trap_tol_bps": float(os.getenv("FP_MGMT_TRAP_TOL_BPS", "8")),
-    "hold_score": float(os.getenv("FP_MGMT_HOLD_SCORE", "1.8")),
-    "tighten_score": float(os.getenv("FP_MGMT_TIGHTEN_SCORE", "1.6")),
-    "partial_score": float(os.getenv("FP_MGMT_PARTIAL_SCORE", "2.0")),
-    "strict_score": float(os.getenv("FP_MGMT_STRICT_SCORE", "2.6"))
-}
-
-FP_MGMT_ENABLED = FP_MGMT_SETTINGS["enable"] == 1
 
 # =================== HELPER FUNCTIONS ===================
 def last_val(x):
@@ -143,46 +44,6 @@ def safe_iloc(series, index=-1):
             return float(series)
     except (IndexError, TypeError, ValueError):
         return 0.0
-
-def apply_footprint_management(df, current_side, state):
-    """تطبيق Footprint Management على الصفقة الحالية"""
-    if not FP_MGMT_ENABLED or not state["open"]:
-        return {"action": "none", "reason": "غير مفعل أو لا توجد صفقة"}
-    
-    try:
-        # استخدام البيانات المغلقة فقط (بدون الشمعة الحية)
-        df_closed = df.iloc[:-1].copy() if len(df) > 1 else df.copy()
-        
-        if len(df_closed) < 30:
-            return {"action": "none", "reason": "بيانات غير كافية"}
-        
-        # حساب مقاييس Footprint
-        df_fp = footprint_mgmt_metrics(df_closed)
-        row = df_fp.iloc[-1]
-        
-        # الحصول على الإشارة
-        action, score, tags = footprint_mgmt_signal(row=row, side=current_side)
-        
-        # التسجيل
-        log_i(f"🧠 FP-MGMT | side={current_side} | action={action} | score={score} | "
-              f"Δz={row.get('delta_z',0):.2f} | vol_z={row.get('vol_z',0):.2f} | "
-              f"tags={','.join(tags) if tags else '—'}")
-        
-        return {
-            "action": action,
-            "score": score,
-            "tags": tags,
-            "delta_z": row.get('delta_z', 0),
-            "vol_z": row.get('vol_z', 0),
-            "abs_top": row.get('abs_top', 0),
-            "abs_bot": row.get('abs_bot', 0),
-            "trap_buy": row.get('trap_buy', 0),
-            "trap_sell": row.get('trap_sell', 0)
-        }
-        
-    except Exception as e:
-        log_w(f"FP-MGMT error: {e}")
-        return {"action": "none", "reason": f"خطأ: {str(e)}"}
 
 # =================== ENV / MODE ===================
 # Exchange Selection
@@ -226,18 +87,6 @@ IMBALANCE_ALERT = 1.30
 FLOW_WINDOW = 20
 FLOW_SPIKE_Z = 1.60
 CVD_SMOOTH = 8
-
-# === Footprint Management Settings ===
-FP_MGMT_ENABLE = int(os.getenv("FP_MGMT_ENABLE", "1"))
-FP_MGMT_WEIGHT = float(os.getenv("FP_MGMT_WEIGHT", "1.6"))
-FP_MGMT_DELTA_Z = float(os.getenv("FP_MGMT_DELTA_Z", "1.2"))
-FP_MGMT_VOL_Z = float(os.getenv("FP_MGMT_VOL_Z", "1.0"))
-FP_MGMT_ABSORB_WICK_PCT = float(os.getenv("FP_MGMT_ABSORB_WICK_PCT", "55"))
-FP_MGMT_TRAP_TOL_BPS = float(os.getenv("FP_MGMT_TRAP_TOL_BPS", "8"))
-FP_MGMT_HOLD_SCORE = float(os.getenv("FP_MGMT_HOLD_SCORE", "1.8"))
-FP_MGMT_TIGHTEN_SCORE = float(os.getenv("FP_MGMT_TIGHTEN_SCORE", "1.6"))
-FP_MGMT_PARTIAL_SCORE = float(os.getenv("FP_MGMT_PARTIAL_SCORE", "2.0"))
-FP_MGMT_STRICT_SCORE = float(os.getenv("FP_MGMT_STRICT_SCORE", "2.6"))
 
 # =================== SMART MONEY CONCEPTS SETTINGS ===================
 FVG_THRESHOLD = 0.1  # Minimum FVG size percentage
@@ -545,13 +394,6 @@ def verify_execution_environment():
     print(f"📈 ADVANCED INDICATORS: SMC + MACD + VWAP + Volume Momentum", flush=True)
     print(f"👣 SMART MONEY CONCEPTS: BOS + Order Blocks + FVG + Liquidity Analysis", flush=True)
     print(f"⚡ RF SETTINGS: period={RF_PERIOD} | mult={RF_MULT} (SUI Optimized)", flush=True)
-    
-    # Footprint Management
-    if FP_MGMT_ENABLED:
-        print(f"👣 FOOTPRINT MANAGEMENT: ENABLED (للإدارة فقط)", flush=True)
-        print(f"   ↳ الوزن: {FP_MGMT_WEIGHT} | Delta-Z: {FP_MGMT_DELTA_Z}", flush=True)
-    else:
-        print(f"👣 FOOTPRINT MANAGEMENT: DISABLED", flush=True)
     
     if not EXECUTE_ORDERS:
         print("🟡 WARNING: EXECUTE_ORDERS=False - البوت في وضع التحليل فقط!", flush=True)
@@ -2271,8 +2113,7 @@ def open_market_enhanced(side, qty, price):
             "tp1_done": False, 
             "highest_profit_pct": 0.0, 
             "profit_targets_achieved": 0,
-            "mode": mode,
-            "hold_tp_until": 0  # حالة تأجيل جني الأرباح
+            "mode": mode
         })
         
         save_state({
@@ -2289,7 +2130,6 @@ def open_market_enhanced(side, qty, price):
             "breakeven_armed": False,
             "trail_active": False,
             "trail_tightened": False,
-            "hold_tp_until": 0
         })
         
         log_g(f"✅ POSITION OPENED: {side.upper()} | mode={mode}")
@@ -2377,7 +2217,6 @@ STATE = {
     "pnl": 0.0, "bars": 0, "trail": None, "breakeven": None,
     "tp1_done": False, "highest_profit_pct": 0.0,
     "profit_targets_achieved": 0,
-    "hold_tp_until": 0  # حالة تأجيل جني الأرباح
 }
 compound_pnl = 0.0
 wait_for_next_signal_side = None
@@ -2469,8 +2308,7 @@ def _reset_after_close(reason, prev_side=None):
         "open": False, "side": None, "entry": None, "qty": 0.0,
         "pnl": 0.0, "bars": 0, "trail": None, "breakeven": None,
         "tp1_done": False, "highest_profit_pct": 0.0, "profit_targets_achieved": 0,
-        "trail_tightened": False, "partial_taken": False,
-        "hold_tp_until": 0  # إعادة تعيين حالة التأجيل
+        "trail_tightened": False, "partial_taken": False
     })
     save_state({"in_position": False, "position_qty": 0})
     
@@ -2480,62 +2318,13 @@ def _reset_after_close(reason, prev_side=None):
 
 # =================== ENHANCED TRADE MANAGEMENT ===================
 def manage_after_entry_professional(df, ind, info):
-    """الإدارة المحترفة للصفقات مع Footprint Management"""
+    """الإدارة المحترفة للصفقات مع النظام المتقدم"""
     if not STATE["open"] or STATE["qty"] <= 0:
         return
 
     current_price = info["price"]
-    current_side = STATE["side"]
     
-    # ===== FP-MGMT: تحليل Footprint للإدارة فقط =====
-    fp_signal = apply_footprint_management(df, current_side, STATE)
-    
-    # تطبيق قرارات Footprint Management
-    if fp_signal["action"] != "none":
-        if fp_signal["action"] == "hold":
-            # تأجيل جني الأرباح مؤقتًا
-            STATE["hold_tp_until"] = int(time.time() + 180)  # 3 دقائق
-            log_i("🟡 FP-MGMT: تأجيل جني الأرباح - قوة اتجاه")
-            
-        elif fp_signal["action"] == "tighten":
-            # تشديد وقف الخسارة المتحرك
-            if STATE.get("trail_active"):
-                trail_mult = TRAIL_TIGHT_MULT * 0.8  # أكثر تشديدًا
-                if current_side == "long":
-                    new_trail = current_price - (ind.get("atr", 0) * trail_mult)
-                    if STATE.get("trail") is None or new_trail > STATE["trail"]:
-                        STATE["trail"] = new_trail
-                else:
-                    new_trail = current_price + (ind.get("atr", 0) * trail_mult)
-                    if STATE.get("trail") is None or new_trail < STATE["trail"]:
-                        STATE["trail"] = new_trail
-                log_i("🟡 FP-MGMT: تشديد وقف الخسارة المتحرك")
-            
-        elif fp_signal["action"] == "partial":
-            # جني جزئي تحوطي
-            close_fraction = 0.10  # 10%
-            close_qty = safe_qty(STATE["qty"] * close_fraction)
-            
-            if close_qty > 0:
-                close_side = "sell" if current_side == "long" else "buy"
-                if MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN:
-                    try:
-                        params = exchange_specific_params(close_side, is_close=True)
-                        ex.create_order(SYMBOL, "market", close_side, close_qty, None, params)
-                        log_g(f"✅ FP-MGMT: جني جزئي تحوطي {close_fraction*100}%")
-                        STATE["qty"] = safe_qty(STATE["qty"] - close_qty)
-                    except Exception as e:
-                        log_e(f"❌ فشل الجني الجزئي: {e}")
-                else:
-                    log_i(f"DRY_RUN: FP-MGMT جني جزئي {close_qty:.4f}")
-            
-        elif fp_signal["action"] == "close":
-            # إغلاق فوري
-            log_w(f"🚨 FP-MGMT: إغلاق صارم - {fp_signal.get('tags', ['إشارة قوية'])[0]}")
-            close_market_strict(f"fp_mgmt_{fp_signal.get('tags', ['strong_signal'])[0]}")
-            return
-    
-    # ===== الاستمرار في الإدارة الأساسية =====
+    # الإدارة المتقدمة
     management_signal = professional_trade_management(df, STATE, current_price)
     
     if management_signal["action"] == "partial_close":
@@ -2565,14 +2354,8 @@ def manage_after_entry_professional(df, ind, info):
     manage_after_entry_enhanced(df, ind, info)
 
 def manage_after_entry_enhanced(df, ind, info):
-    """إدارة محسنة للمركز مع مراعاة Footprint Management"""
+    """إدارة محسنة للمركز مع خروج ذكي حسب النمط"""
     if not STATE["open"] or STATE["qty"] <= 0:
-        return
-
-    # التحقق من حالة تأجيل جني الأرباح
-    hold_until = STATE.get("hold_tp_until", 0)
-    if hold_until > time.time():
-        # تأجيل تنفيذ جني الأرباح
         return
 
     px = info["price"]
@@ -2677,6 +2460,9 @@ def manage_after_entry_enhanced(df, ind, info):
     if STATE["qty"] <= FINAL_CHUNK_QTY:
         log_w(f"DUST GUARD: qty {STATE['qty']} <= {FINAL_CHUNK_QTY}, closing...")
         close_market_strict("dust_guard")
+
+# استبدال إدارة الصفقات بالنظام المحترف
+manage_after_entry = manage_after_entry_professional
 
 def smart_exit_guard_with_smc(state, df, ind, flow, bm, now_price, pnl_pct, mode, side, entry_price, gz=None):
     """خروج ذكي مع تحليل SMC المتقدم"""
@@ -2949,8 +2735,7 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     mode='LIVE' if MODE_LIVE else 'PAPER'
-    fp_status = 'ENABLED' if FP_MGMT_ENABLED else 'DISABLED'
-    return f"✅ SUI Council PROFESSIONAL Bot — {EXCHANGE_NAME.upper()} — {SYMBOL} {INTERVAL} — {mode} — Footprint: {fp_status}"
+    return f"✅ SUI Council PROFESSIONAL Bot — {EXCHANGE_NAME.upper()} — {SYMBOL} {INTERVAL} — {mode} — Multi-Exchange"
 
 @app.route("/metrics")
 def metrics():
@@ -2960,10 +2745,6 @@ def metrics():
         "leverage": LEVERAGE, "risk_alloc": RISK_ALLOC, "price": price_now(),
         "state": STATE, "compound_pnl": compound_pnl,
         "entry_mode": "PROFESSIONAL_COUNCIL_WITH_SMC", "wait_for_next_signal": wait_for_next_signal_side,
-        "footprint_management": {
-            "enabled": FP_MGMT_ENABLED,
-            "settings": FP_MGMT_SETTINGS
-        },
         "guards": {"max_spread_bps": MAX_SPREAD_BPS, "final_chunk_qty": FINAL_CHUNK_QTY}
     })
 
@@ -2973,11 +2754,7 @@ def health():
         "ok": True, "exchange": EXCHANGE_NAME, "mode": "live" if MODE_LIVE else "paper",
         "open": STATE["open"], "side": STATE["side"], "qty": STATE["qty"],
         "compound_pnl": compound_pnl, "timestamp": datetime.utcnow().isoformat(),
-        "entry_mode": "PROFESSIONAL_COUNCIL_WITH_SMC", "wait_for_next_signal": wait_for_next_signal_side,
-        "footprint_management": {
-            "enabled": FP_MGMT_ENABLED,
-            "current_action": STATE.get("hold_tp_until", 0) > time.time() and "HOLD_TP" or "NORMAL"
-        }
+        "entry_mode": "PROFESSIONAL_COUNCIL_WITH_SMC", "wait_for_next_signal": wait_for_next_signal_side
     }), 200
 
 def keepalive_loop():
@@ -3002,7 +2779,7 @@ emit_snapshots = emit_snapshots_with_smc
 
 # =================== BOOT ===================
 if __name__ == "__main__":
-    log_banner("SUI COUNCIL PROFESSIONAL BOT - SMART MONEY CONCEPTS + FOOTPRINT MANAGEMENT")
+    log_banner("SUI COUNCIL PROFESSIONAL BOT - SMART MONEY CONCEPTS")
     state = load_state() or {}
     state.setdefault("in_position", False)
 
@@ -3019,9 +2796,7 @@ if __name__ == "__main__":
     print(colored(f"🏆 PROFESSIONAL MIN CONFIDENCE: {ULTIMATE_MIN_CONFIDENCE}", "yellow"))
     print(colored(f"📊 SMART MONEY CONCEPTS: BOS + Order Blocks + FVG + Liquidity Analysis", "yellow"))
     print(colored(f"📈 ADVANCED INDICATORS: MACD + VWAP + Volume Momentum + Dynamic Pivots", "yellow"))
-    print(colored(f"👣 FOOTPRINT MANAGEMENT: {'ENABLED' if FP_MGMT_ENABLED else 'DISABLED'} (للإدارة فقط)", "yellow"))
-    if FP_MGMT_ENABLED:
-        print(colored(f"   ↳ الوزن: {FP_MGMT_WEIGHT} | Delta-Z: {FP_MGMT_DELTA_Z} | Vol-Z: {FP_MGMT_VOL_Z}", "yellow"))
+    print(colored(f"👣 FOOTPRINT ANALYSIS: Volume Analysis + Absorption + Real Momentum", "yellow"))
     print(colored(f"🚀 EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
     
     logging.info("service starting…")
