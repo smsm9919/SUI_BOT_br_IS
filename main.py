@@ -5,7 +5,7 @@ RF Futures Bot — RF-LIVE ONLY (Multi-Exchange: BingX & Bybit)
 • Golden Entry + Golden Reversal + Wick Exhaustion + Smart Exit
 • Dynamic TP ladder + ATR-trailing + Volume Momentum + Liquidity Analysis
 • Professional Logging & Dashboard + Multi-Exchange Support
-• Footprint Management for Advanced Trade Management
+• ACTIVE COUNCIL SYSTEM - Enhanced Profit Maximization
 """
 
 import os, time, math, random, signal, sys, traceback, logging, json
@@ -21,104 +21,6 @@ try:
     from termcolor import colored
 except Exception:
     def colored(t,*a,**k): return t
-
-# =================== FOOTPRINT MANAGEMENT PATCH ===================
-def _zscore(s: pd.Series, win=20):
-    mu = s.rolling(win, min_periods=1).mean()
-    sd = s.rolling(win, min_periods=1).std().replace(0, np.nan)
-    return ((s - mu) / sd).fillna(0)
-
-def _prep_ranges(df: pd.DataFrame):
-    rng  = (df["high"] - df["low"]).replace(0, np.nan)
-    body = (df["close"] - df["open"]).abs()
-    df["uw_pct"] = ((df["high"] - df[["close","open"]].max(axis=1)) / rng * 100).fillna(0)
-    df["lw_pct"] = ((df[["close","open"]].min(axis=1) - df["low"]) / rng * 100).fillna(0)
-    df["dir"]    = np.where(df["close"] >= df["open"], "up", "down")
-    return df
-
-def footprint_mgmt_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """ يحسب قياسات Footprint على OHLCV مغلق — لا يحتاج Level2 """
-    df = _prep_ranges(df.copy())
-    df["delta_proxy"] = np.sign(df["close"] - df["open"]) * df["volume"]
-    df["delta_z"]     = _zscore(df["delta_proxy"], win=20)
-    df["vol_z"]       = _zscore(df["volume"], win=20)
-
-    wick    = float(os.getenv("FP_MGMT_ABSORB_WICK_PCT","55"))
-    vol_gate= float(os.getenv("FP_MGMT_VOL_Z","1.0"))
-    df["abs_top"] = ((df["uw_pct"]>=wick) & (df["close"]<df["open"]) & (df["vol_z"]>=vol_gate)).astype(int)
-    df["abs_bot"] = ((df["lw_pct"]>=wick) & (df["close"]>df["open"]) & (df["vol_z"]>=vol_gate)).astype(int)
-
-    tol     = float(os.getenv("FP_MGMT_TRAP_TOL_BPS","8"))/10000.0
-    hh      = df["high"].rolling(30, min_periods=2).max().shift(1)
-    ll      = df["low"].rolling(30, min_periods=2).min().shift(1)
-    df["trap_buy"]  = ((df["low"] < ll) & (df["close"] > (ll*(1+tol)))).astype(int)   # فخ بائعين → BUY
-    df["trap_sell"] = ((df["high"]> hh) & (df["close"] < (hh*(1-tol)))).astype(int)   # فخ مشترين → SELL
-    return df
-
-def footprint_mgmt_signal(row: pd.Series, side: str):
-    """ يرجّع (action, score, tags) لإدارة الصفقة فقط """
-    if int(os.getenv("FP_MGMT_ENABLE","1")) != 1:
-        return ("none", 0.0, ["fp_mgmt_off"])
-
-    W   = float(os.getenv("FP_MGMT_WEIGHT","1.6"))
-    dz  = float(row.get("delta_z",0.0))
-    vz  = float(row.get("vol_z",0.0))
-    dz_gate = float(os.getenv("FP_MGMT_DELTA_Z","1.2"))
-    vz_gate = float(os.getenv("FP_MGMT_VOL_Z","1.0"))
-
-    score_for, score_against = 0.0, 0.0
-    tags = []
-
-    # دلتا + حجم (قوة تدفّق)
-    if abs(dz) >= dz_gate and vz >= vz_gate:
-        if (dz>0 and side=="buy") or (dz<0 and side=="sell"):
-            score_for += (1.0 + min(abs(dz)/3.0, 1.0)) * W;  tags.append("delta_with")
-        else:
-            score_against += (1.0 + min(abs(dz)/3.0, 1.0)) * W; tags.append("delta_against")
-
-    # امتصاص
-    if side=="buy"  and row.get("abs_top",0)==1: score_against += 1.0*W; tags.append("absorption_top")
-    if side=="sell" and row.get("abs_bot",0)==1: score_against += 1.0*W; tags.append("absorption_bot")
-    if side=="buy"  and row.get("abs_bot",0)==1: score_for     += 0.8*W; tags.append("absorption_support")
-    if side=="sell" and row.get("abs_top",0)==1: score_for     += 0.8*W; tags.append("absorption_resist")
-
-    # فِخاخ
-    if side=="buy"  and row.get("trap_sell",0)==1: score_against += 0.9*W; tags.append("trap_sell")
-    if side=="sell" and row.get("trap_buy",0)==1:  score_against += 0.9*W; tags.append("trap_buy")
-    if side=="buy"  and row.get("trap_buy",0)==1:  score_for     += 0.6*W; tags.append("trap_buy_support")
-    if side=="sell" and row.get("trap_sell",0)==1: score_for     += 0.6*W; tags.append("trap_sell_resist")
-
-    # خريطة القرار
-    hold_thr    = float(os.getenv("FP_MGMT_HOLD_SCORE","1.8"))
-    tighten_thr = float(os.getenv("FP_MGMT_TIGHTEN_SCORE","1.6"))
-    partial_thr = float(os.getenv("FP_MGMT_PARTIAL_SCORE","2.0"))
-    strict_thr  = float(os.getenv("FP_MGMT_STRICT_SCORE","2.6"))
-
-    action = "none"
-    score  = round(max(score_for, score_against), 2)
-
-    if score_against >= strict_thr:   action = "close"
-    elif score_against >= partial_thr: action = "partial"
-    elif score_against >= tighten_thr: action = "tighten"
-    elif score_for    >= hold_thr:     action = "hold"
-
-    return (action, score, tags)
-
-# إعدادات Footprint Management
-FP_MGMT_SETTINGS = {
-    "enable": int(os.getenv("FP_MGMT_ENABLE", "1")),
-    "weight": float(os.getenv("FP_MGMT_WEIGHT", "1.6")),
-    "delta_z": float(os.getenv("FP_MGMT_DELTA_Z", "1.2")),
-    "vol_z": float(os.getenv("FP_MGMT_VOL_Z", "1.0")),
-    "absorb_wick_pct": float(os.getenv("FP_MGMT_ABSORB_WICK_PCT", "55")),
-    "trap_tol_bps": float(os.getenv("FP_MGMT_TRAP_TOL_BPS", "8")),
-    "hold_score": float(os.getenv("FP_MGMT_HOLD_SCORE", "1.8")),
-    "tighten_score": float(os.getenv("FP_MGMT_TIGHTEN_SCORE", "1.6")),
-    "partial_score": float(os.getenv("FP_MGMT_PARTIAL_SCORE", "2.0")),
-    "strict_score": float(os.getenv("FP_MGMT_STRICT_SCORE", "2.6"))
-}
-
-FP_MGMT_ENABLED = FP_MGMT_SETTINGS["enable"] == 1
 
 # =================== HELPER FUNCTIONS ===================
 def last_val(x):
@@ -143,46 +45,6 @@ def safe_iloc(series, index=-1):
             return float(series)
     except (IndexError, TypeError, ValueError):
         return 0.0
-
-def apply_footprint_management(df, current_side, state):
-    """تطبيق Footprint Management على الصفقة الحالية"""
-    if not FP_MGMT_ENABLED or not state["open"]:
-        return {"action": "none", "reason": "غير مفعل أو لا توجد صفقة"}
-    
-    try:
-        # استخدام البيانات المغلقة فقط (بدون الشمعة الحية)
-        df_closed = df.iloc[:-1].copy() if len(df) > 1 else df.copy()
-        
-        if len(df_closed) < 30:
-            return {"action": "none", "reason": "بيانات غير كافية"}
-        
-        # حساب مقاييس Footprint
-        df_fp = footprint_mgmt_metrics(df_closed)
-        row = df_fp.iloc[-1]
-        
-        # الحصول على الإشارة
-        action, score, tags = footprint_mgmt_signal(row=row, side=current_side)
-        
-        # التسجيل
-        log_i(f"🧠 FP-MGMT | side={current_side} | action={action} | score={score} | "
-              f"Δz={row.get('delta_z',0):.2f} | vol_z={row.get('vol_z',0):.2f} | "
-              f"tags={','.join(tags) if tags else '—'}")
-        
-        return {
-            "action": action,
-            "score": score,
-            "tags": tags,
-            "delta_z": row.get('delta_z', 0),
-            "vol_z": row.get('vol_z', 0),
-            "abs_top": row.get('abs_top', 0),
-            "abs_bot": row.get('abs_bot', 0),
-            "trap_buy": row.get('trap_buy', 0),
-            "trap_sell": row.get('trap_sell', 0)
-        }
-        
-    except Exception as e:
-        log_w(f"FP-MGMT error: {e}")
-        return {"action": "none", "reason": f"خطأ: {str(e)}"}
 
 # =================== ENV / MODE ===================
 # Exchange Selection
@@ -211,7 +73,7 @@ SHADOW_MODE_DASHBOARD = False
 DRY_RUN = False
 
 # ==== Addon: Logging + Recovery Settings ====
-BOT_VERSION = f"SUI Council PROFESSIONAL v7.0 — {EXCHANGE_NAME.upper()} Multi-Exchange"
+BOT_VERSION = f"SUI Council PROFESSIONAL v8.0 — {EXCHANGE_NAME.upper()} Multi-Exchange - ACTIVE COUNCIL"
 print("🔁 Booting:", BOT_VERSION, flush=True)
 
 STATE_PATH = "./bot_state.json"
@@ -226,18 +88,6 @@ IMBALANCE_ALERT = 1.30
 FLOW_WINDOW = 20
 FLOW_SPIKE_Z = 1.60
 CVD_SMOOTH = 8
-
-# === Footprint Management Settings ===
-FP_MGMT_ENABLE = int(os.getenv("FP_MGMT_ENABLE", "1"))
-FP_MGMT_WEIGHT = float(os.getenv("FP_MGMT_WEIGHT", "1.6"))
-FP_MGMT_DELTA_Z = float(os.getenv("FP_MGMT_DELTA_Z", "1.2"))
-FP_MGMT_VOL_Z = float(os.getenv("FP_MGMT_VOL_Z", "1.0"))
-FP_MGMT_ABSORB_WICK_PCT = float(os.getenv("FP_MGMT_ABSORB_WICK_PCT", "55"))
-FP_MGMT_TRAP_TOL_BPS = float(os.getenv("FP_MGMT_TRAP_TOL_BPS", "8"))
-FP_MGMT_HOLD_SCORE = float(os.getenv("FP_MGMT_HOLD_SCORE", "1.8"))
-FP_MGMT_TIGHTEN_SCORE = float(os.getenv("FP_MGMT_TIGHTEN_SCORE", "1.6"))
-FP_MGMT_PARTIAL_SCORE = float(os.getenv("FP_MGMT_PARTIAL_SCORE", "2.0"))
-FP_MGMT_STRICT_SCORE = float(os.getenv("FP_MGMT_STRICT_SCORE", "2.6"))
 
 # =================== SMART MONEY CONCEPTS SETTINGS ===================
 FVG_THRESHOLD = 0.1  # Minimum FVG size percentage
@@ -348,6 +198,12 @@ DYNAMIC_PIVOT_PERIOD = 20
 TREND_FAST_PERIOD = 10
 TREND_SLOW_PERIOD = 20
 TREND_SIGNAL_PERIOD = 9
+
+# ==== ACTIVE COUNCIL SETTINGS ====
+ACTIVE_COUNCIL_ENABLED = True
+MIN_HOLD_TIME_SCALP = 180  # 3 دقائق minimum for scalp
+MIN_HOLD_TIME_TREND = 300  # 5 دقائق minimum for trend
+PROFIT_TARGET_BOOST_FACTOR = 1.3  # زيادة الأهداف مع قوة المجلس
 
 # =================== PROFESSIONAL LOGGING ===================
 def log_i(msg): print(f"ℹ️ {msg}", flush=True)
@@ -545,13 +401,7 @@ def verify_execution_environment():
     print(f"📈 ADVANCED INDICATORS: SMC + MACD + VWAP + Volume Momentum", flush=True)
     print(f"👣 SMART MONEY CONCEPTS: BOS + Order Blocks + FVG + Liquidity Analysis", flush=True)
     print(f"⚡ RF SETTINGS: period={RF_PERIOD} | mult={RF_MULT} (SUI Optimized)", flush=True)
-    
-    # Footprint Management
-    if FP_MGMT_ENABLED:
-        print(f"👣 FOOTPRINT MANAGEMENT: ENABLED (للإدارة فقط)", flush=True)
-        print(f"   ↳ الوزن: {FP_MGMT_WEIGHT} | Delta-Z: {FP_MGMT_DELTA_Z}", flush=True)
-    else:
-        print(f"👣 FOOTPRINT MANAGEMENT: DISABLED", flush=True)
+    print(f"🚀 ACTIVE COUNCIL: ENABLED - Enhanced Profit Maximization", flush=True)
     
     if not EXECUTE_ORDERS:
         print("🟡 WARNING: EXECUTE_ORDERS=False - البوت في وضع التحليل فقط!", flush=True)
@@ -831,7 +681,7 @@ def compute_vwap(df):
         return {"vwap": 0, "deviation": 0, "signal": "neutral", "price_above_vwap": False}
     
     high = df['high'].astype(float)
-    low = df['low'].astype(float)  # تم التصحيح هنا
+    low = df['low'].astype(float)
     close = df['close'].astype(float)
     volume = df['volume'].astype(float)
     
@@ -1474,6 +1324,934 @@ def decide_strategy_mode(df, adx=None, di_plus=None, di_minus=None, rsi_ctx=None
     why = "adx/di_trend" if adx >= ADX_TREND_MIN else ("rsi_trendZ" if rsi_ctx["trendZ"] != "none" else "scalp_default")
     
     return {"mode": mode, "why": why}
+
+# =================== ACTIVE COUNCIL SYSTEMS ===================
+
+class ActiveCouncilTracker:
+    """نظام تتبع نشط للمجلس أثناء الصفقات"""
+    
+    def __init__(self):
+        self.entry_time = None
+        self.peak_profit = 0.0
+        self.trend_momentum = 1.0
+        self.council_strength = 0.0
+        self.adjustment_history = []
+        
+    def start_trade(self, side, entry_price, council_data):
+        """بدء تتبع الصفقة الجديدة"""
+        self.entry_time = time.time()
+        self.peak_profit = 0.0
+        self.trend_momentum = 1.0
+        self.council_strength = max(council_data['score_b'], council_data['score_s'])
+        self.adjustment_history = []
+        
+    def update_tracking(self, current_pnl, council_data, market_conditions):
+        """تحديث التتبع أثناء الصفقة"""
+        # تحديث ذروة الربح
+        if current_pnl > self.peak_profit:
+            self.peak_profit = current_pnl
+            
+        # تحديث قوة المجلس
+        current_strength = max(council_data['score_b'], council_data['score_s'])
+        strength_change = current_strength - self.council_strength
+        self.council_strength = current_strength
+        
+        # تحديث زخم الاتجاه
+        self.update_trend_momentum(strength_change, market_conditions)
+        
+        return self.get_tracking_metrics()
+    
+    def update_trend_momentum(self, strength_change, market_conditions):
+        """تحديث زخم الاتجاه"""
+        momentum_factor = 1.0
+        
+        # زيادة الزخم مع قوة المجلس
+        if strength_change > 0.5:
+            momentum_factor += 0.1
+        elif strength_change < -0.5:
+            momentum_factor -= 0.1
+            
+        # تعديل حسب ظروف السوق
+        volatility = market_conditions.get('volatility', 1.0)
+        if volatility > 1.5:
+            momentum_factor *= 1.2  # زيادة الزخم في السوق المتقلب
+            
+        self.trend_momentum *= momentum_factor
+        self.trend_momentum = max(0.5, min(2.0, self.trend_momentum))
+        
+    def get_tracking_metrics(self):
+        """الحصول على مقاييس التتبع"""
+        return {
+            'peak_profit': self.peak_profit,
+            'trend_momentum': self.trend_momentum,
+            'council_strength': self.council_strength,
+            'time_in_trade': time.time() - self.entry_time if self.entry_time else 0
+        }
+
+class DynamicProfitOptimizer:
+    """محسن الأرباح الديناميكي أثناء الصفقات"""
+    
+    def __init__(self):
+        self.profit_targets = []
+        self.current_target_index = 0
+        self.adaptive_trailing = {}
+        
+    def setup_trade(self, side, entry_price, initial_targets):
+        """إعداد الأهداف للصفقة الجديدة"""
+        self.profit_targets = self.calculate_adaptive_targets(initial_targets, side)
+        self.current_target_index = 0
+        self.adaptive_trailing = {
+            'active': False,
+            'start_price': entry_price,
+            'trail_distance': 0.0
+        }
+        
+    def calculate_adaptive_targets(self, base_targets, side):
+        """حساب أهداف متكيفة مع اتجاه الصفقة"""
+        enhanced_targets = []
+        
+        for i, target in enumerate(base_targets):
+            # زيادة تدريجية في الأهداف
+            enhancement = 1.0 + (i * 0.3)  # 30% زيادة لكل هدف
+            enhanced_target = target * enhancement
+            enhanced_targets.append(enhanced_target)
+            
+        return enhanced_targets
+    
+    def adjust_targets_dynamically(self, current_pnl, council_strength, trend_momentum):
+        """ضبط الأهداف ديناميكياً أثناء الصفقة"""
+        adjusted_targets = self.profit_targets.copy()
+        strength_factor = council_strength / 10.0  # عامل قوة المجلس
+        momentum_factor = trend_momentum  # عامل زخم الاتجاه
+        
+        # تطبيق عوامل التحسين
+        for i in range(len(adjusted_targets)):
+            # زيادة الأهداف مع قوة المجلس وزخم الاتجاه
+            adjustment = 1.0 + (strength_factor * 0.2) + (momentum_factor * 0.1)
+            adjusted_targets[i] *= adjustment
+            
+        return adjusted_targets
+    
+    def should_take_profit(self, current_pnl, adjusted_targets):
+        """تحديد ما إذا كان يجب جني الأرباح"""
+        if self.current_target_index >= len(adjusted_targets):
+            return False, 0.0
+            
+        current_target = adjusted_targets[self.current_target_index]
+        
+        if current_pnl >= current_target:
+            self.current_target_index += 1
+            return True, current_target
+            
+        return False, 0.0
+
+class AutomaticProfitAdjuster:
+    """معدل الأرباح التلقائي أثناء الصفقات"""
+    
+    def __init__(self):
+        self.adjustment_intervals = []
+        self.last_adjustment_time = 0
+        self.min_adjustment_interval = 60  # ثانية
+        
+    def analyze_and_adjust(self, df, state, council_data):
+        """التحليل والتعديل التلقائي"""
+        current_time = time.time()
+        
+        # التحقق من الفاصل الزمني للتعديل
+        if current_time - self.last_adjustment_time < self.min_adjustment_interval:
+            return None
+            
+        current_price = last_val(df['close'])
+        current_pnl = (current_price - state["entry"]) / state["entry"] * 100 * (1 if state["side"] == "long" else -1)
+        
+        # تحليل فرص التعديل
+        adjustment_opportunity = self.find_adjustment_opportunity(
+            df, state, council_data, current_pnl
+        )
+        
+        if adjustment_opportunity:
+            self.last_adjustment_time = current_time
+            self.adjustment_intervals.append({
+                'time': current_time,
+                'type': adjustment_opportunity['type'],
+                'pnl': current_pnl,
+                'strength': adjustment_opportunity['strength']
+            })
+            
+        return adjustment_opportunity
+    
+    def find_adjustment_opportunity(self, df, state, council_data, current_pnl):
+        """إيجاد فرص التعديل"""
+        opportunities = []
+        
+        # 1. فرصة زيادة الأهداف مع قوة المجلس
+        council_strength = max(council_data['score_b'], council_data['score_s'])
+        if council_strength > 8.0 and current_pnl > 0.5:
+            opportunities.append({
+                'type': 'increase_targets',
+                'strength': council_strength / 10.0,
+                'reason': 'قوة مجلس عالية مع ربح إيجابي'
+            })
+            
+        # 2. فرصة تعديل التريل مع تحسن الزخم
+        momentum = council_data.get("advanced_metrics", {}).get("price_momentum", {})
+        if momentum.get("acceleration", 0) > 0.1 and current_pnl > 1.0:
+            opportunities.append({
+                'type': 'tighten_trail',
+                'strength': abs(momentum.get("acceleration", 0)),
+                'reason': 'تسارع زخم إيجابي'
+            })
+            
+        # 3. فرصة جني إضافي مع إشارات SMC قوية
+        smc_data = council_data.get("advanced_metrics", {}).get("smc_analysis", {})
+        if smc_data.get("market_structure", {}).get("bos_bullish") and state["side"] == "long":
+            opportunities.append({
+                'type': 'partial_profit',
+                'strength': 0.8,
+                'reason': 'إشارة BOS صاعدة قوية'
+            })
+            
+        # اختيار أفضل فرصة
+        if opportunities:
+            best_opportunity = max(opportunities, key=lambda x: x['strength'])
+            return best_opportunity
+            
+        return None
+
+# تهيئة أنظمة المجلس النشط
+active_tracker = ActiveCouncilTracker()
+profit_optimizer = DynamicProfitOptimizer()
+profit_adjuster = AutomaticProfitAdjuster()
+
+# =================== ENHANCED PROFESSIONAL COUNCIL ===================
+
+def enhanced_professional_council(df):
+    """مجلس إدارة محسن بمؤشرات متقدمة"""
+    try:
+        current_price = last_val(df['close'])
+        basic_indicators = compute_indicators(df)
+        
+        # المؤشرات المتقدمة الجديدة
+        advanced_metrics = {
+            "volume_analysis": advanced_volume_analysis(df),
+            "price_momentum": enhanced_price_momentum(df),
+            "market_cycle": detect_market_cycle(df),
+            "liquidity_analysis": advanced_liquidity_detection(df),
+            "sentiment_indicators": market_sentiment_analysis(df)
+        }
+        
+        # نظام تصويت متقدم
+        votes_buy = 0
+        votes_sell = 0
+        confidence_buy = 0.0
+        confidence_sell = 0.0
+        
+        # 1. تحليل الحجم المتقدم (25% وزن)
+        volume_signal = advanced_metrics["volume_analysis"]
+        if volume_signal.get("bullish"):
+            votes_buy += 3
+            confidence_buy += volume_signal.get("strength", 0) * 2.5
+        if volume_signal.get("bearish"):
+            votes_sell += 3
+            confidence_sell += volume_signal.get("strength", 0) * 2.5
+            
+        # 2. زخم السعر المحسن (20% وزن)
+        momentum = advanced_metrics["price_momentum"]
+        if momentum.get("trend") == "bullish":
+            votes_buy += 2
+            confidence_buy += momentum.get("momentum_strength", 0) * 2.0
+        if momentum.get("trend") == "bearish":
+            votes_sell += 2
+            confidence_sell += momentum.get("momentum_strength", 0) * 2.0
+            
+        # 3. دورة السوق (15% وزن)
+        market_cycle = advanced_metrics["market_cycle"]
+        if market_cycle.get("phase") in ["accumulation", "uptrend"]:
+            votes_buy += 2
+            confidence_buy += 1.5
+        if market_cycle.get("phase") in ["distribution", "downtrend"]:
+            votes_sell += 2
+            confidence_sell += 1.5
+            
+        # 4. تحليل السيولة (20% وزن)
+        liquidity = advanced_metrics["liquidity_analysis"]
+        if liquidity.get("buy_pressure"):
+            votes_buy += 2
+            confidence_buy += liquidity.get("pressure_strength", 0) * 2.0
+        if liquidity.get("sell_pressure"):
+            votes_sell += 2
+            confidence_sell += liquidity.get("pressure_strength", 0) * 2.0
+            
+        # 5. المشاعر (10% وزن)
+        sentiment = advanced_metrics["sentiment_indicators"]
+        if sentiment.get("bullish"):
+            votes_buy += 1
+            confidence_buy += 1.0
+        if sentiment.get("bearish"):
+            votes_sell += 1
+            confidence_sell += 1.0
+            
+        # 6. المؤشرات الأساسية (10% وزن)
+        if basic_indicators.get('adx', 0) > 20:
+            if basic_indicators.get('plus_di', 0) > basic_indicators.get('minus_di', 0):
+                votes_buy += 1
+                confidence_buy += 1.0
+            else:
+                votes_sell += 1
+                confidence_sell += 1.0
+                
+        return {
+            "b": votes_buy, "s": votes_sell,
+            "score_b": confidence_buy, "score_s": confidence_sell,
+            "advanced_metrics": advanced_metrics,
+            "market_analysis": {
+                "trade_mode": enhanced_trade_mode_detection(df),
+                "volatility": calculate_advanced_volatility(df),
+                "trend_strength": analyze_trend_strength(df)
+            }
+        }
+        
+    except Exception as e:
+        log_w(f"Enhanced council error: {e}")
+        return {"b": 0, "s": 0, "score_b": 0.0, "score_s": 0.0}
+
+def advanced_volume_analysis(df):
+    """تحليل حجم متقدم"""
+    if len(df) < 30:
+        return {"bullish": False, "bearish": False, "strength": 0}
+    
+    volume = df['volume'].astype(float)
+    close = df['close'].astype(float)
+    high = df['high'].astype(float)
+    low = df['low'].astype(float)
+    
+    # حجم على القمم vs القيعان
+    up_days = close > close.shift(1)
+    volume_on_up = volume[up_days].mean() if up_days.any() else 0
+    volume_on_down = volume[~up_days].mean() if (~up_days).any() else 0
+    
+    # نسبة الحجم
+    volume_ratio = volume_on_up / volume_on_down if volume_on_down > 0 else 1
+    
+    # تركيز الحجم
+    recent_volume = volume.tail(5).mean()
+    avg_volume = volume.tail(20).mean()
+    volume_concentration = recent_volume / avg_volume if avg_volume > 0 else 1
+    
+    bullish = volume_ratio > 1.2 and volume_concentration > 1.1
+    bearish = volume_ratio < 0.8 and volume_concentration > 1.1
+    
+    strength = abs(volume_ratio - 1) * volume_concentration
+    
+    return {
+        "bullish": bullish,
+        "bearish": bearish,
+        "strength": strength,
+        "volume_ratio": volume_ratio,
+        "concentration": volume_concentration
+    }
+
+def enhanced_price_momentum(df):
+    """زخم سعر محسن"""
+    if len(df) < 20:
+        return {"trend": "neutral", "momentum_strength": 0}
+    
+    close = df['close'].astype(float)
+    
+    # زخم متعدد الأطر الزمنية
+    momentum_5 = (last_val(close) / safe_iloc(close, -5) - 1) * 100
+    momentum_10 = (last_val(close) / safe_iloc(close, -10) - 1) * 100
+    momentum_20 = (last_val(close) / safe_iloc(close, -20) - 1) * 100
+    
+    # تسارع الزخم
+    acceleration = momentum_5 - momentum_10
+    
+    # قوة الزخم
+    momentum_strength = (abs(momentum_5) + abs(momentum_10) + abs(momentum_20)) / 3
+    
+    # تحديد الاتجاه
+    if momentum_5 > 0.5 and momentum_10 > 0.3 and acceleration > 0:
+        trend = "bullish"
+    elif momentum_5 < -0.5 and momentum_10 < -0.3 and acceleration < 0:
+        trend = "bearish"
+    else:
+        trend = "neutral"
+        
+    return {
+        "trend": trend,
+        "momentum_strength": momentum_strength,
+        "acceleration": acceleration,
+        "short_term": momentum_5,
+        "medium_term": momentum_10
+    }
+
+def detect_market_cycle(df):
+    """اكتشاف دورة السوق"""
+    if len(df) < 50:
+        return {"phase": "neutral", "confidence": 0}
+    
+    close = df['close'].astype(float)
+    
+    # المتوسطات المتحركة للدورة
+    ema_short = close.ewm(span=10).mean()
+    ema_medium = close.ewm(span=30).mean()
+    ema_long = close.ewm(span=50).mean()
+    
+    # تحديد المرحلة
+    price_vs_short = last_val(close) > last_val(ema_short)
+    short_vs_medium = last_val(ema_short) > last_val(ema_medium)
+    medium_vs_long = last_val(ema_medium) > last_val(ema_long)
+    
+    if price_vs_short and short_vs_medium and medium_vs_long:
+        phase = "uptrend"
+        confidence = 0.9
+    elif not price_vs_short and not short_vs_medium and not medium_vs_long:
+        phase = "downtrend"
+        confidence = 0.9
+    elif price_vs_short and not short_vs_medium:
+        phase = "pullback"
+        confidence = 0.6
+    elif not price_vs_short and short_vs_medium:
+        phase = "bounce"
+        confidence = 0.6
+    else:
+        phase = "consolidation"
+        confidence = 0.5
+        
+    return {"phase": phase, "confidence": confidence}
+
+def advanced_liquidity_detection(df):
+    """اكتشاف سيولة متقدم"""
+    if len(df) < 20:
+        return {"buy_pressure": False, "sell_pressure": False, "pressure_strength": 0}
+    
+    close = df['close'].astype(float)
+    volume = df['volume'].astype(float)
+    high = df['high'].astype(float)
+    low = df['low'].astype(float)
+    
+    # ضغط الشراء: سعر الإغلاق في أعلى النطاق مع حجم عالي
+    range_position = (close - low) / (high - low).replace(0, 1)
+    buy_pressure = (range_position > 0.7) & (volume > volume.rolling(20).mean() * 1.2)
+    
+    # ضغط البيع: سعر الإغلاق في أسفل النطاق مع حجم عالي
+    sell_pressure = (range_position < 0.3) & (volume > volume.rolling(20).mean() * 1.2)
+    
+    # قوة الضغط
+    pressure_strength = 0
+    if buy_pressure.iloc[-1]:
+        pressure_strength = range_position.iloc[-1] * (volume.iloc[-1] / volume.rolling(20).mean().iloc[-1])
+    elif sell_pressure.iloc[-1]:
+        pressure_strength = (1 - range_position.iloc[-1]) * (volume.iloc[-1] / volume.rolling(20).mean().iloc[-1])
+    
+    return {
+        "buy_pressure": bool(buy_pressure.iloc[-1]),
+        "sell_pressure": bool(sell_pressure.iloc[-1]),
+        "pressure_strength": pressure_strength
+    }
+
+def market_sentiment_analysis(df):
+    """تحليل مشاعر السوق"""
+    if len(df) < 20:
+        return {"bullish": False, "bearish": False, "sentiment_strength": 0}
+    
+    rsi = compute_rsi(df['close'].astype(float), 14)
+    current_rsi = last_val(rsi)
+    
+    # مؤشرات المشاعر
+    bullish_sentiment = current_rsi < 70 and current_rsi > 30  # ليست في مناطق ذروة الشراء/البيع
+    bearish_sentiment = current_rsi > 30 and current_rsi < 70  # ليست في مناطق ذروة الشراء/البيع
+    
+    # قوة المشاعر
+    sentiment_strength = 1 - abs(current_rsi - 50) / 50  # كلما كان RSI أقرب لـ 50، زادت قوة المشاعر
+    
+    return {
+        "bullish": bullish_sentiment,
+        "bearish": bearish_sentiment,
+        "sentiment_strength": sentiment_strength
+    }
+
+def calculate_advanced_volatility(df):
+    """حساب التقلب المتقدم"""
+    if len(df) < 20:
+        return 1.0
+        
+    returns = df['close'].pct_change().dropna()
+    volatility = returns.std() * math.sqrt(365) * 100  # التقلب السنوي %
+    
+    # التقلب النسبي
+    avg_volatility = 2.0  # افتراضي
+    relative_vol = volatility / avg_volatility
+    
+    return relative_vol
+
+def analyze_trend_strength(df):
+    """تحليل قوة الاتجاه"""
+    if len(df) < 30:
+        return 0.5
+        
+    close = df['close'].astype(float)
+    
+    # اتجاه المتوسطات
+    ema_short = close.ewm(span=8).mean()
+    ema_medium = close.ewm(span=21).mean()
+    ema_long = close.ewm(span=50).mean()
+    
+    # استمرارية الاتجاه
+    trend_alignment = 0
+    if (last_val(ema_short) > last_val(ema_medium) > last_val(ema_long)):
+        trend_alignment = 1
+    elif (last_val(ema_short) < last_val(ema_medium) < last_val(ema_long)):
+        trend_alignment = -1
+        
+    # قياس الاستمرارية
+    persistence = 0.0
+    for i in range(1, min(10, len(ema_short))):
+        if (safe_iloc(ema_short, -i) > safe_iloc(ema_medium, -i) > safe_iloc(ema_long, -i)):
+            persistence += 0.1
+        elif (safe_iloc(ema_short, -i) < safe_iloc(ema_medium, -i) < safe_iloc(ema_long, -i)):
+            persistence += 0.1
+            
+    return min(persistence, 1.0)
+
+def enhanced_trade_mode_detection(df):
+    """كشف محسن لنمط التداول"""
+    if len(df) < 50:
+        return "scalp"
+    
+    # مؤشرات متعددة للتمييز
+    adx = compute_indicators(df).get('adx', 0)
+    volatility = calculate_advanced_volatility(df)
+    trend_persistence = analyze_trend_strength(df)
+    volume_profile = advanced_volume_analysis(df)
+    
+    # نظام نقاط للتمييز
+    score = 0
+    
+    # قوة الاتجاه
+    if adx > 25:
+        score += 3
+    elif adx > 20:
+        score += 2
+    elif adx > 15:
+        score += 1
+        
+    # استمرارية الاتجاه
+    if trend_persistence > 0.7:
+        score += 2
+    elif trend_persistence > 0.5:
+        score += 1
+        
+    # نمط الحجم
+    if volume_profile.get("bullish") or volume_profile.get("bearish"):
+        score += 2
+        
+    # التقلب
+    if volatility < 1.5:  # تقلب منخفض - مناسب للترند
+        score += 1
+        
+    # تحديد النمط
+    if score >= 6:
+        return "trend"
+    elif score >= 3:
+        return "swing"
+    else:
+        return "scalp"
+
+# =================== ACTIVE COUNCIL MANAGEMENT ===================
+
+def active_council_management(df, state, current_price):
+    """إدارة نشطة للمجلس أثناء الصفقة"""
+    if not state["open"]:
+        return {"action": "hold", "reason": "لا توجد صفقة مفتوحة"}
+    
+    # جمع بيانات السوق الحالية
+    council_data = enhanced_professional_council(df)
+    market_analysis = council_data.get("market_analysis", {})
+    current_pnl = (current_price - state["entry"]) / state["entry"] * 100 * (1 if state["side"] == "long" else -1)
+    
+    # تحديث التتبع النشط
+    tracking_metrics = active_tracker.update_tracking(
+        current_pnl, 
+        council_data, 
+        market_analysis
+    )
+    
+    # ضبط الأهداف ديناميكياً
+    adjusted_targets = profit_optimizer.adjust_targets_dynamically(
+        current_pnl,
+        tracking_metrics['council_strength'],
+        tracking_metrics['trend_momentum']
+    )
+    
+    # قرار الجني الذكي
+    should_take_profit, target_level = profit_optimizer.should_take_profit(current_pnl, adjusted_targets)
+    
+    if should_take_profit:
+        close_fraction = calculate_dynamic_close_fraction(
+            state, 
+            current_pnl, 
+            tracking_metrics,
+            council_data
+        )
+        
+        return {
+            "action": "partial_close",
+            "close_fraction": close_fraction,
+            "reason": f"هدف ديناميكي {target_level:.2f}%",
+            "target_level": target_level,
+            "adjusted_targets": adjusted_targets,
+            "council_strength": tracking_metrics['council_strength'],
+            "trend_momentum": tracking_metrics['trend_momentum']
+        }
+    
+    # تحليل الاستمرارية
+    continuation_analysis = analyze_trade_continuation(
+        state, council_data, current_pnl, tracking_metrics
+    )
+    
+    if continuation_analysis["should_continue"]:
+        return {
+            "action": "continue",
+            "reason": continuation_analysis["reason"],
+            "confidence": continuation_analysis["confidence"]
+        }
+    else:
+        return {
+            "action": "close",
+            "reason": continuation_analysis["reason"],
+            "confidence": continuation_analysis["confidence"]
+        }
+
+def calculate_dynamic_close_fraction(state, current_pnl, tracking_metrics, council_data):
+    """حساب نسبة الإغلاق الديناميكية"""
+    base_fraction = 0.3  # نسبة أساسية
+    
+    # زيادة النسبة مع قوة المجلس
+    strength_bonus = min(0.2, (tracking_metrics['council_strength'] - 7) * 0.05)
+    
+    # زيادة النسبة مع زخم الاتجاه
+    momentum_bonus = min(0.15, (tracking_metrics['trend_momentum'] - 1) * 0.1)
+    
+    # تقليل النسبة إذا كان الربح أقل من الذروة
+    peak_penalty = 0.0
+    if current_pnl < tracking_metrics['peak_profit'] * 0.8:
+        peak_penalty = 0.1
+        
+    final_fraction = base_fraction + strength_bonus + momentum_bonus - peak_penalty
+    return max(0.2, min(0.5, final_fraction))
+
+def analyze_trade_continuation(state, council_data, current_pnl, tracking_metrics):
+    """تحليل استمرارية الصفقة"""
+    side = state["side"]
+    votes = council_data
+    
+    # عوامل الاستمرارية الإيجابية
+    positive_factors = 0
+    negative_factors = 0
+    
+    # قوة المجلس في اتجاه الصفقة
+    if side == "long" and votes['score_b'] > votes['score_s'] + 2:
+        positive_factors += 2
+    elif side == "short" and votes['score_s'] > votes['score_b'] + 2:
+        positive_factors += 2
+        
+    # زخم الاتجاه
+    if tracking_metrics['trend_momentum'] > 1.2:
+        positive_factors += 1
+        
+    # تحليل SMC للاستمرارية
+    smc_data = council_data.get("advanced_metrics", {}).get("smc_analysis", {})
+    market_structure = smc_data.get("market_structure", {})
+    
+    if side == "long" and market_structure.get("bos_bullish"):
+        positive_factors += 2
+    elif side == "short" and market_structure.get("bos_bearish"):
+        positive_factors += 2
+        
+    # تحليل الزخم المتقدم
+    momentum = council_data.get("advanced_metrics", {}).get("price_momentum", {})
+    if (side == "long" and momentum.get("trend") == "bullish") or \
+       (side == "short" and momentum.get("trend") == "bearish"):
+        positive_factors += 1
+        
+    # قرار الاستمرارية
+    should_continue = positive_factors > negative_factors
+    confidence = positive_factors / max(positive_factors + negative_factors, 1)
+    
+    return {
+        "should_continue": should_continue,
+        "confidence": confidence,
+        "reason": f"عوامل إيجابية: {positive_factors}, عوامل سلبية: {negative_factors}",
+        "positive_factors": positive_factors,
+        "negative_factors": negative_factors
+    }
+
+def enhanced_active_council(df, state):
+    """مجلس إدارة معزز أثناء الصفقات النشطة"""
+    if not state["open"]:
+        return enhanced_professional_council(df)
+    
+    # البيانات الأساسية
+    basic_council = enhanced_professional_council(df)
+    current_price = last_val(df['close'])
+    current_pnl = (current_price - state["entry"]) / state["entry"] * 100 * (1 if state["side"] == "long" else -1)
+    
+    # مؤشرات مخصصة للصفقات النشطة
+    active_indicators = {
+        "trade_health": analyze_trade_health(df, state),
+        "momentum_quality": assess_momentum_quality(df, state),
+        "exit_readiness": calculate_exit_readiness(df, state),
+        "profit_potential": estimate_profit_potential(df, state)
+    }
+    
+    # تعزيز قرارات المجلس بناءً على الصفقة النشطة
+    enhanced_votes = basic_council.copy()
+    
+    # تعزيز الأصوات مع صحة الصفقة
+    if active_indicators["trade_health"] > 0.7:
+        if state["side"] == "long":
+            enhanced_votes["score_b"] *= 1.2
+        else:
+            enhanced_votes["score_s"] *= 1.2
+            
+    # تعزيز مع جودة الزخم
+    if active_indicators["momentum_quality"] > 0.8:
+        momentum_boost = 1.3
+        enhanced_votes["score_b"] *= momentum_boost
+        enhanced_votes["score_s"] *= momentum_boost
+        
+    return {
+        **enhanced_votes,
+        "active_indicators": active_indicators,
+        "current_pnl": current_pnl,
+        "trade_duration": time.time() - active_tracker.entry_time if active_tracker.entry_time else 0
+    }
+
+def analyze_trade_health(df, state):
+    """تحليل صحة الصفقة الحالية"""
+    current_price = last_val(df['close'])
+    entry = state["entry"]
+    current_pnl = (current_price - entry) / entry * 100 * (1 if state["side"] == "long" else -1)
+    
+    # عوامل الصحة
+    health_score = 0.0
+    
+    # الربح الحالي
+    if current_pnl > 0:
+        health_score += 0.4 * min(current_pnl / 2.0, 1.0)  # حتى 2% ربح
+    
+    # قوة الاتجاه
+    trend_strength = analyze_trend_strength(df)
+    health_score += 0.3 * trend_strength
+    
+    # استقرار السعر
+    volatility = calculate_advanced_volatility(df)
+    stability_bonus = max(0, 1.0 - volatility / 3.0)  # تقلب منخفض = صحة أفضل
+    health_score += 0.3 * stability_bonus
+    
+    return min(1.0, health_score)
+
+def assess_momentum_quality(df, state):
+    """تقييم جودة الزخم للصفقة الحالية"""
+    momentum = enhanced_price_momentum(df)
+    trend_strength = analyze_trend_strength(df)
+    
+    quality_score = 0.0
+    
+    # قوة الزخم
+    momentum_strength = momentum.get("momentum_strength", 0)
+    quality_score += 0.4 * min(momentum_strength / 5.0, 1.0)
+    
+    # استمرارية الزخم
+    if momentum.get("trend") == ("bullish" if state["side"] == "long" else "bearish"):
+        quality_score += 0.3
+        
+    # تسارع الزخم
+    acceleration = momentum.get("acceleration", 0)
+    if (state["side"] == "long" and acceleration > 0) or (state["side"] == "short" and acceleration < 0):
+        quality_score += 0.3
+        
+    return min(1.0, quality_score)
+
+def calculate_exit_readiness(df, state):
+    """حساب جاهزية الخروج من الصفقة"""
+    current_price = last_val(df['close'])
+    entry = state["entry"]
+    current_pnl = (current_price - entry) / entry * 100 * (1 if state["side"] == "long" else -1)
+    
+    readiness = 0.0
+    
+    # تحقيق أهداف الربح
+    if current_pnl >= 1.0:
+        readiness += 0.4
+        
+    # ضعف الزخم
+    momentum = enhanced_price_momentum(df)
+    if momentum.get("trend") == "neutral":
+        readiness += 0.3
+        
+    # إشارات انعكاس
+    council_data = enhanced_professional_council(df)
+    if (state["side"] == "long" and council_data["score_s"] > council_data["score_b"]) or \
+       (state["side"] == "short" and council_data["score_b"] > council_data["score_s"]):
+        readiness += 0.3
+        
+    return min(1.0, readiness)
+
+def estimate_profit_potential(df, state):
+    """تقدير إمكانية الربح المتبقية"""
+    current_price = last_val(df['close'])
+    entry = state["entry"]
+    current_pnl = (current_price - entry) / entry * 100 * (1 if state["side"] == "long" else -1)
+    
+    potential = 0.0
+    
+    # قوة الاتجاه المستمر
+    trend_strength = analyze_trend_strength(df)
+    potential += 0.5 * trend_strength
+    
+    # المسافة إلى مستويات المقاومة/الدعم
+    liquidity_zones = detect_liquidity_zones(df)
+    if state["side"] == "long":
+        next_resistance = find_next_resistance(current_price, liquidity_zones["sell_liquidity"])
+        if next_resistance:
+            potential_pnl = (next_resistance - current_price) / current_price * 100
+            potential += 0.5 * min(potential_pnl / 3.0, 1.0)
+    else:
+        next_support = find_next_support(current_price, liquidity_zones["buy_liquidity"])
+        if next_support:
+            potential_pnl = (current_price - next_support) / current_price * 100
+            potential += 0.5 * min(potential_pnl / 3.0, 1.0)
+            
+    return min(1.0, potential)
+
+def find_next_resistance(current_price, resistance_levels):
+    """إيجاد next مستوى مقاومة"""
+    if not resistance_levels:
+        return None
+        
+    higher_levels = [level['price'] for level in resistance_levels if level['price'] > current_price]
+    return min(higher_levels) if higher_levels else None
+
+def find_next_support(current_price, support_levels):
+    """إيجاد next مستوى دعم"""
+    if not support_levels:
+        return None
+        
+    lower_levels = [level['price'] for level in support_levels if level['price'] < current_price]
+    return max(lower_levels) if lower_levels else None
+
+# =================== ENHANCED TRADE MANAGEMENT ===================
+
+def manage_after_entry_with_active_council(df, state, current_price):
+    """الإدارة النهائية المعززة بالمجلس النشط"""
+    if not state["open"]:
+        return
+        
+    # المجلس النشط المعزز
+    active_council = enhanced_active_council(df, state)
+    
+    # إدارة المجلس النشط
+    council_decision = active_council_management(df, state, current_price)
+    
+    # التعديل التلقائي
+    auto_adjustment = profit_adjuster.analyze_and_adjust(df, state, active_council)
+    
+    # تنفيذ القرارات
+    if council_decision["action"] == "partial_close":
+        execute_partial_close(state, council_decision)
+        
+    elif council_decision["action"] == "close":
+        log_w(f"🚨 إغلاق بالمجلس النشط: {council_decision['reason']}")
+        close_market_strict(f"active_council_{council_decision['reason']}")
+        
+    elif auto_adjustment:
+        apply_auto_adjustment(auto_adjustment, state)
+        
+    # التسجيل التفصيلي
+    log_active_council_activity(active_council, council_decision, auto_adjustment)
+
+def execute_partial_close(state, decision):
+    """تنفيذ الإغلاق الجزئي بالمجلس النشط"""
+    close_fraction = decision["close_fraction"]
+    close_qty = safe_qty(state["qty"] * close_fraction)
+    
+    if close_qty > 0:
+        close_side = "sell" if state["side"] == "long" else "buy"
+        
+        if MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN:
+            try:
+                params = exchange_specific_params(close_side, is_close=True)
+                ex.create_order(SYMBOL, "market", close_side, close_qty, None, params)
+                
+                log_g(f"✅ جني نشط: {close_fraction*100:.1f}% عند {decision['target_level']:.2f}%")
+                log_g(f"   📊 قوة المجلس: {decision['council_strength']:.1f}")
+                log_g(f"   🚀 زخم الاتجاه: {decision['trend_momentum']:.2f}")
+                
+                state["qty"] = safe_qty(state["qty"] - close_qty)
+                state["profit_targets_achieved"] = state.get("profit_targets_achieved", 0) + 1
+                
+            except Exception as e:
+                log_e(f"❌ فشل الجني النشط: {e}")
+        else:
+            log_i(f"DRY_RUN: جني نشط {close_qty:.4f}")
+
+def apply_auto_adjustment(adjustment, state):
+    """تطبيق التعديل التلقائي"""
+    adjustment_type = adjustment['type']
+    
+    if adjustment_type == 'increase_targets':
+        state["dynamic_targets_boost"] = state.get("dynamic_targets_boost", 1.0) * 1.1
+        log_i(f"🎯 زيادة الأهداف: {adjustment['reason']}")
+        
+    elif adjustment_type == 'tighten_trail':
+        state["trail_tightened"] = True
+        state["trail"] = None  # إعادة حساب التريل
+        log_i(f"🔄 تشديد التريل: {adjustment['reason']}")
+        
+    elif adjustment_type == 'partial_profit':
+        # جني ربح جزئي إضافي
+        extra_close_qty = safe_qty(state["qty"] * 0.1)  # 10% إضافية
+        if extra_close_qty > 0:
+            close_side = "sell" if state["side"] == "long" else "buy"
+            # تنفيذ الجني الإضافي...
+
+def log_active_council_activity(council_data, decision, adjustment):
+    """تسجيل نشاط المجلس النشط"""
+    if decision["action"] != "hold" or adjustment:
+        print(f"\n🎯 المجلس النشط - تقرير:", flush=True)
+        print(f"📊 القرار: {decision['action']} - {decision['reason']}", flush=True)
+        print(f"⭐ قوة المجلس: {council_data.get('council_strength', 0):.1f}", flush=True)
+        print(f"🚀 الزخم: {council_data.get('trend_momentum', 1.0):.2f}", flush=True)
+        print(f"💰 الربح الحالي: {council_data.get('current_pnl', 0):.2f}%", flush=True)
+        
+        if adjustment:
+            print(f"🔄 تعديل تلقائي: {adjustment['type']} - {adjustment['reason']}", flush=True)
+            
+        print("─" * 80, flush=True)
+
+# =================== ENHANCED TRADE EXECUTION ===================
+
+def open_market_with_active_council(side, qty, price, council_data):
+    """فتح صفقة مع تفعيل المجلس النشط"""
+    success = open_market_enhanced(side, qty, price)
+    
+    if success:
+        # تفعيل أنظمة التتبع
+        active_tracker.start_trade(side, price, council_data)
+        
+        # إعداد محسن الأرباح
+        base_targets = [0.6, 1.2, 2.0, 3.0]  # أهداف أساسية محسنة
+        profit_optimizer.setup_trade(side, price, base_targets)
+        
+        # تحديث الحالة
+        STATE["active_council_enabled"] = True
+        STATE["profit_optimizer"] = profit_optimizer
+        
+        log_g(f"✅ فتح صفقة مع المجلس النشط - الأهداف: {base_targets}")
+        
+    return success
 
 # =================== PROFESSIONAL COUNCIL WITH SMC ===================
 def ultimate_council_professional(df):
@@ -2146,7 +2924,7 @@ def emit_snapshots_with_smc(exchange, symbol, df, balance_fn=None, pnl_fn=None):
     try:
         bm = bookmap_snapshot(exchange, symbol)
         flow = compute_flow_metrics(df)
-        cv = ultimate_council_professional(df)  # استخدام المجلس المحترف
+        cv = enhanced_professional_council(df)  # استخدام المجلس المحسن
         mode = decide_strategy_mode(df)
         
         # تمرير ind بشكل صحيح لـ golden_zone_check
@@ -2164,7 +2942,7 @@ def emit_snapshots_with_smc(exchange, symbol, df, balance_fn=None, pnl_fn=None):
 
         # عرض SMC في الداشبورد
         smc_note = ""
-        smc_data = cv.get("advanced_indicators", {}).get("smc_analysis", {})
+        smc_data = cv.get("advanced_metrics", {}).get("smc_analysis", {})
         market_structure = smc_data.get("market_structure", {})
         
         if market_structure.get("bos_bullish"):
@@ -2271,8 +3049,7 @@ def open_market_enhanced(side, qty, price):
             "tp1_done": False, 
             "highest_profit_pct": 0.0, 
             "profit_targets_achieved": 0,
-            "mode": mode,
-            "hold_tp_until": 0  # حالة تأجيل جني الأرباح
+            "mode": mode
         })
         
         save_state({
@@ -2289,15 +3066,12 @@ def open_market_enhanced(side, qty, price):
             "breakeven_armed": False,
             "trail_active": False,
             "trail_tightened": False,
-            "hold_tp_until": 0
         })
         
         log_g(f"✅ POSITION OPENED: {side.upper()} | mode={mode}")
         return True
     
     return False
-
-open_market = open_market_enhanced
 
 # =================== INDICATORS ===================
 def wilder_ema(s: pd.Series, n: int): 
@@ -2377,7 +3151,6 @@ STATE = {
     "pnl": 0.0, "bars": 0, "trail": None, "breakeven": None,
     "tp1_done": False, "highest_profit_pct": 0.0,
     "profit_targets_achieved": 0,
-    "hold_tp_until": 0  # حالة تأجيل جني الأرباح
 }
 compound_pnl = 0.0
 wait_for_next_signal_side = None
@@ -2469,8 +3242,7 @@ def _reset_after_close(reason, prev_side=None):
         "open": False, "side": None, "entry": None, "qty": 0.0,
         "pnl": 0.0, "bars": 0, "trail": None, "breakeven": None,
         "tp1_done": False, "highest_profit_pct": 0.0, "profit_targets_achieved": 0,
-        "trail_tightened": False, "partial_taken": False,
-        "hold_tp_until": 0  # إعادة تعيين حالة التأجيل
+        "trail_tightened": False, "partial_taken": False
     })
     save_state({"in_position": False, "position_qty": 0})
     
@@ -2479,100 +3251,9 @@ def _reset_after_close(reason, prev_side=None):
     logging.info(f"AFTER_CLOSE waiting_for={wait_for_next_signal_side}")
 
 # =================== ENHANCED TRADE MANAGEMENT ===================
-def manage_after_entry_professional(df, ind, info):
-    """الإدارة المحترفة للصفقات مع Footprint Management"""
-    if not STATE["open"] or STATE["qty"] <= 0:
-        return
-
-    current_price = info["price"]
-    current_side = STATE["side"]
-    
-    # ===== FP-MGMT: تحليل Footprint للإدارة فقط =====
-    fp_signal = apply_footprint_management(df, current_side, STATE)
-    
-    # تطبيق قرارات Footprint Management
-    if fp_signal["action"] != "none":
-        if fp_signal["action"] == "hold":
-            # تأجيل جني الأرباح مؤقتًا
-            STATE["hold_tp_until"] = int(time.time() + 180)  # 3 دقائق
-            log_i("🟡 FP-MGMT: تأجيل جني الأرباح - قوة اتجاه")
-            
-        elif fp_signal["action"] == "tighten":
-            # تشديد وقف الخسارة المتحرك
-            if STATE.get("trail_active"):
-                trail_mult = TRAIL_TIGHT_MULT * 0.8  # أكثر تشديدًا
-                if current_side == "long":
-                    new_trail = current_price - (ind.get("atr", 0) * trail_mult)
-                    if STATE.get("trail") is None or new_trail > STATE["trail"]:
-                        STATE["trail"] = new_trail
-                else:
-                    new_trail = current_price + (ind.get("atr", 0) * trail_mult)
-                    if STATE.get("trail") is None or new_trail < STATE["trail"]:
-                        STATE["trail"] = new_trail
-                log_i("🟡 FP-MGMT: تشديد وقف الخسارة المتحرك")
-            
-        elif fp_signal["action"] == "partial":
-            # جني جزئي تحوطي
-            close_fraction = 0.10  # 10%
-            close_qty = safe_qty(STATE["qty"] * close_fraction)
-            
-            if close_qty > 0:
-                close_side = "sell" if current_side == "long" else "buy"
-                if MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN:
-                    try:
-                        params = exchange_specific_params(close_side, is_close=True)
-                        ex.create_order(SYMBOL, "market", close_side, close_qty, None, params)
-                        log_g(f"✅ FP-MGMT: جني جزئي تحوطي {close_fraction*100}%")
-                        STATE["qty"] = safe_qty(STATE["qty"] - close_qty)
-                    except Exception as e:
-                        log_e(f"❌ فشل الجني الجزئي: {e}")
-                else:
-                    log_i(f"DRY_RUN: FP-MGMT جني جزئي {close_qty:.4f}")
-            
-        elif fp_signal["action"] == "close":
-            # إغلاق فوري
-            log_w(f"🚨 FP-MGMT: إغلاق صارم - {fp_signal.get('tags', ['إشارة قوية'])[0]}")
-            close_market_strict(f"fp_mgmt_{fp_signal.get('tags', ['strong_signal'])[0]}")
-            return
-    
-    # ===== الاستمرار في الإدارة الأساسية =====
-    management_signal = professional_trade_management(df, STATE, current_price)
-    
-    if management_signal["action"] == "partial_close":
-        close_fraction = management_signal["close_fraction"]
-        close_qty = safe_qty(STATE["qty"] * close_fraction)
-        
-        if close_qty > 0:
-            close_side = "sell" if STATE["side"] == "long" else "buy"
-            if MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN:
-                try:
-                    params = exchange_specific_params(close_side, is_close=True)
-                    ex.create_order(SYMBOL, "market", close_side, close_qty, None, params)
-                    log_g(f"✅ جني أرباح: {close_fraction*100}% عند {management_signal['tp_level']:.2f}%")
-                    STATE["qty"] = safe_qty(STATE["qty"] - close_qty)
-                    STATE["profit_targets_achieved"] = management_signal.get("new_achieved_tps", STATE["profit_targets_achieved"] + 1)
-                except Exception as e:
-                    log_e(f"❌ فشل جني الأرباح: {e}")
-            else:
-                log_i(f"DRY_RUN: جني أرباح {close_qty:.4f}")
-    
-    elif management_signal["action"] == "close":
-        log_w(f"🚨 إغلاق محترف: {management_signal['reason']}")
-        close_market_strict(f"professional_{management_signal['reason']}")
-        return
-    
-    # الاستمرار في الإدارة الأساسية المحسنة
-    manage_after_entry_enhanced(df, ind, info)
-
 def manage_after_entry_enhanced(df, ind, info):
-    """إدارة محسنة للمركز مع مراعاة Footprint Management"""
+    """إدارة محسنة للمركز مع خروج ذكي حسب النمط"""
     if not STATE["open"] or STATE["qty"] <= 0:
-        return
-
-    # التحقق من حالة تأجيل جني الأرباح
-    hold_until = STATE.get("hold_tp_until", 0)
-    if hold_until > time.time():
-        # تأجيل تنفيذ جني الأرباح
         return
 
     px = info["price"]
@@ -2677,6 +3358,9 @@ def manage_after_entry_enhanced(df, ind, info):
     if STATE["qty"] <= FINAL_CHUNK_QTY:
         log_w(f"DUST GUARD: qty {STATE['qty']} <= {FINAL_CHUNK_QTY}, closing...")
         close_market_strict("dust_guard")
+
+# استبدال إدارة الصفقات بالنظام المحترف
+manage_after_entry = manage_after_entry_with_active_council
 
 def smart_exit_guard_with_smc(state, df, ind, flow, bm, now_price, pnl_pct, mode, side, entry_price, gz=None):
     """خروج ذكي مع تحليل SMC المتقدم"""
@@ -2888,8 +3572,8 @@ def trade_loop_professional_with_smc():
             if spread_bps is not None and spread_bps > MAX_SPREAD_BPS:
                 reason = f"انتشار مرتفع ({fmt(spread_bps,2)}bps > {MAX_SPREAD_BPS})"
             
-            council_data = ultimate_council_professional(df)
-            smc_data = council_data.get("advanced_indicators", {}).get("smc_analysis", {})
+            council_data = enhanced_professional_council(df)
+            smc_data = council_data.get("advanced_metrics", {}).get("smc_analysis", {})
             
             # قرار التداول النهائي مع أولوية SMC
             decision = None
@@ -2926,7 +3610,7 @@ def trade_loop_professional_with_smc():
                     qty = compute_size(bal, px or info["price"])
                     if qty > 0:
                         side = "buy" if decision == "BUY" else "sell"
-                        ok = open_market(side, qty, px or info["price"])
+                        ok = open_market_with_active_council(side, qty, px or info["price"], council_data)
                         if ok:
                             wait_for_next_signal_side = None
                     else:
@@ -2949,8 +3633,7 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     mode='LIVE' if MODE_LIVE else 'PAPER'
-    fp_status = 'ENABLED' if FP_MGMT_ENABLED else 'DISABLED'
-    return f"✅ SUI Council PROFESSIONAL Bot — {EXCHANGE_NAME.upper()} — {SYMBOL} {INTERVAL} — {mode} — Footprint: {fp_status}"
+    return f"✅ SUI Council PROFESSIONAL Bot — {EXCHANGE_NAME.upper()} — {SYMBOL} {INTERVAL} — {mode} — Multi-Exchange — ACTIVE COUNCIL"
 
 @app.route("/metrics")
 def metrics():
@@ -2960,11 +3643,8 @@ def metrics():
         "leverage": LEVERAGE, "risk_alloc": RISK_ALLOC, "price": price_now(),
         "state": STATE, "compound_pnl": compound_pnl,
         "entry_mode": "PROFESSIONAL_COUNCIL_WITH_SMC", "wait_for_next_signal": wait_for_next_signal_side,
-        "footprint_management": {
-            "enabled": FP_MGMT_ENABLED,
-            "settings": FP_MGMT_SETTINGS
-        },
-        "guards": {"max_spread_bps": MAX_SPREAD_BPS, "final_chunk_qty": FINAL_CHUNK_QTY}
+        "guards": {"max_spread_bps": MAX_SPREAD_BPS, "final_chunk_qty": FINAL_CHUNK_QTY},
+        "active_council": ACTIVE_COUNCIL_ENABLED
     })
 
 @app.route("/health")
@@ -2974,10 +3654,7 @@ def health():
         "open": STATE["open"], "side": STATE["side"], "qty": STATE["qty"],
         "compound_pnl": compound_pnl, "timestamp": datetime.utcnow().isoformat(),
         "entry_mode": "PROFESSIONAL_COUNCIL_WITH_SMC", "wait_for_next_signal": wait_for_next_signal_side,
-        "footprint_management": {
-            "enabled": FP_MGMT_ENABLED,
-            "current_action": STATE.get("hold_tp_until", 0) > time.time() and "HOLD_TP" or "NORMAL"
-        }
+        "active_council": ACTIVE_COUNCIL_ENABLED
     }), 200
 
 def keepalive_loop():
@@ -2995,14 +3672,15 @@ def keepalive_loop():
 
 # =================== INTEGRATION ===================
 # استبدال الدوال الأساسية بالإصدارات المحسنة
-ultimate_council_voting_with_footprint = ultimate_council_professional
-manage_after_entry_ultimate = manage_after_entry_professional
+ultimate_council_voting_with_footprint = enhanced_professional_council
+manage_after_entry_ultimate = manage_after_entry_with_active_council
 execute_trade_decision_with_footprint = execute_professional_trade
 emit_snapshots = emit_snapshots_with_smc
+open_market = open_market_with_active_council
 
 # =================== BOOT ===================
 if __name__ == "__main__":
-    log_banner("SUI COUNCIL PROFESSIONAL BOT - SMART MONEY CONCEPTS + FOOTPRINT MANAGEMENT")
+    log_banner("SUI COUNCIL PROFESSIONAL BOT - SMART MONEY CONCEPTS - ACTIVE COUNCIL")
     state = load_state() or {}
     state.setdefault("in_position", False)
 
@@ -3019,10 +3697,9 @@ if __name__ == "__main__":
     print(colored(f"🏆 PROFESSIONAL MIN CONFIDENCE: {ULTIMATE_MIN_CONFIDENCE}", "yellow"))
     print(colored(f"📊 SMART MONEY CONCEPTS: BOS + Order Blocks + FVG + Liquidity Analysis", "yellow"))
     print(colored(f"📈 ADVANCED INDICATORS: MACD + VWAP + Volume Momentum + Dynamic Pivots", "yellow"))
-    print(colored(f"👣 FOOTPRINT MANAGEMENT: {'ENABLED' if FP_MGMT_ENABLED else 'DISABLED'} (للإدارة فقط)", "yellow"))
-    if FP_MGMT_ENABLED:
-        print(colored(f"   ↳ الوزن: {FP_MGMT_WEIGHT} | Delta-Z: {FP_MGMT_DELTA_Z} | Vol-Z: {FP_MGMT_VOL_Z}", "yellow"))
-    print(colored(f"🚀 EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
+    print(colored(f"👣 FOOTPRINT ANALYSIS: Volume Analysis + Absorption + Real Momentum", "yellow"))
+    print(colored(f"🚀 ACTIVE COUNCIL: ENABLED - Enhanced Profit Maximization", "yellow"))
+    print(colored(f"⚡ EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
     
     logging.info("service starting…")
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
