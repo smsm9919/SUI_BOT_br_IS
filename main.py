@@ -117,7 +117,7 @@ TP_LEVELS = [0.5, 1.0, 1.8, 2.5, 3.5]  # Profit targets in %
 TP_RATIOS = [0.2, 0.25, 0.2, 0.2, 0.15]  # Close ratios for each TP
 
 TRAILING_ENABLED = True
-TRAILING_ACTIVATION = 0.008    # Activate trailing after 0.8% profit
+TRAILING_ACTIVATION = 0.008  # Activate trailing after 0.8% profit
 TRAILING_MODE = "atr_based"  # atr_based, percentage_based
 TRAILING_ATR_MULTIPLIER = 1.5
 
@@ -126,6 +126,10 @@ STOP_LOSS_STRATEGY = "atr_based"  # atr_based, percentage_based, structure_based
 STOP_LOSS_ATR_MULTIPLIER = 1.8
 MAX_DRAWDOWN_PER_TRADE = 3.0  # % 
 MAX_DRAWDOWN_DAILY = 8.0  # %
+
+# =================== LOOP CONFIGURATION ===================
+BASE_SLEEP = 5  # Base sleep time in seconds
+NEAR_CLOSE_S = 2  # Sleep time when near close
 
 # =================== ENHANCED LOGGING SYSTEM ===================
 class ProfessionalLogger:
@@ -1405,7 +1409,7 @@ class ProfessionalExecutionSystem:
             risk_amount = balance * (RISK_ALLOC / 100.0)
             
             # استخدام ATR لحساب وقف الخسارة
-            df = fetch_ohlcv()
+            df = fetch_ohlcv_enhanced()
             if df is not None and len(df) > ATR_PERIOD:
                 atr = AdvancedIndicatorSystem.calculate_atr(
                     df['high'], df['low'], df['close'], ATR_PERIOD
@@ -1533,7 +1537,7 @@ def main_loop_enhanced():
         except Exception as e:
             log.error(f"🔥 خطأ غير متوقع: {e}")
             traceback.print_exc()
-            time.sleep(LOOP_SLEEP * 2)
+            time.sleep(BASE_SLEEP * 2)
 
 def fetch_ohlcv_enhanced():
     """جلب بيانات OHLCV محسن"""
