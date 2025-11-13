@@ -117,7 +117,7 @@ TP_LEVELS = [0.5, 1.0, 1.8, 2.5, 3.5]  # Profit targets in %
 TP_RATIOS = [0.2, 0.25, 0.2, 0.2, 0.15]  # Close ratios for each TP
 
 TRAILING_ENABLED = True
-TRAILING_ACTIVATION = 0.8  %  # Activate trailing after 0.8% profit
+TRAILING_ACTIVATION = 0.008  %  # Activate trailing after 0.8% profit
 TRAILING_MODE = "atr_based"  # atr_based, percentage_based
 TRAILING_ATR_MULTIPLIER = 1.5
 
