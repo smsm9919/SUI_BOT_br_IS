@@ -26,7 +26,7 @@ except Exception:
 
 # =================== CUSTOM TECHNICAL INDICATORS ===================
 class TechnicalIndicators:
-    """مكتبة مؤشرات فنية بديلة بدون TA-Lib"""
+    """مكتبة مؤشرات فنية بديلة بدون TA-Lib - محسنة لمطابقة Bybit"""
     
     @staticmethod
     def sma(data, period):
@@ -40,13 +40,23 @@ class TechnicalIndicators:
     
     @staticmethod
     def rsi(data, period=14):
-        """مؤشر القوة النسبية"""
-        delta = data.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
+        """مؤشر القوة النسبية - محسن لمطابقة Bybit"""
+        try:
+            delta = data.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            
+            # تسجيل تفاصيل RSI للتحقق
+            if len(data) > period:
+                current_rsi = rsi.iloc[-1]
+                logging.info(f"🔍 RSI CALCULATION: Period={period}, Current={current_rsi:.2f}")
+            
+            return rsi
+        except Exception as e:
+            logging.error(f"RSI calculation error: {e}")
+            return pd.Series([50] * len(data), index=data.index)
     
     @staticmethod
     def macd(data, fast=12, slow=26, signal=9):
@@ -94,27 +104,42 @@ class TechnicalIndicators:
     
     @staticmethod
     def adx(high, low, close, period=14):
-        """مؤشر ADX"""
-        up_move = high.diff()
-        down_move = low.diff().abs()
-        
-        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
-        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
-        
-        tr1 = high - low
-        tr2 = abs(high - close.shift())
-        tr3 = abs(low - close.shift())
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        
-        atr = tr.rolling(period).mean()
-        
-        plus_di = 100 * (pd.Series(plus_dm, index=high.index).rolling(period).mean() / atr)
-        minus_di = 100 * (pd.Series(minus_dm, index=high.index).rolling(period).mean() / atr)
-        
-        dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
-        adx = dx.rolling(period).mean()
-        
-        return adx, plus_di, minus_di
+        """مؤشر ADX - محسن لمطابقة Bybit"""
+        try:
+            # حساب +DM و -DM
+            up_move = high.diff()
+            down_move = low.diff().abs()
+            
+            plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
+            minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+            
+            # المدى الحقيقي (True Range)
+            tr1 = high - low
+            tr2 = abs(high - close.shift())
+            tr3 = abs(low - close.shift())
+            true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            
+            # المتوسطات المتحركة باستخدام طريقة Wilder
+            atr = true_range.rolling(period).mean()
+            plus_di = 100 * (pd.Series(plus_dm, index=high.index).rolling(period).mean() / atr)
+            minus_di = 100 * (pd.Series(minus_dm, index=high.index).rolling(period).mean() / atr)
+            
+            # حساب DX و ADX
+            dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
+            adx = dx.rolling(period).mean()
+            
+            # تسجيل تفاصيل ADX للتحقق
+            if len(high) > period:
+                current_adx = adx.iloc[-1] if not pd.isna(adx.iloc[-1]) else 0
+                current_plus_di = plus_di.iloc[-1] if not pd.isna(plus_di.iloc[-1]) else 0
+                current_minus_di = minus_di.iloc[-1] if not pd.isna(minus_di.iloc[-1]) else 0
+                logging.info(f"🔍 ADX CALCULATION: Period={period}, ADX={current_adx:.2f}, +DI={current_plus_di:.2f}, -DI={current_minus_di:.2f}")
+            
+            return adx, plus_di, minus_di
+        except Exception as e:
+            logging.error(f"ADX calculation error: {e}")
+            empty_series = pd.Series([0] * len(high), index=high.index)
+            return empty_series, empty_series, empty_series
 
 # إنشاء كائن المؤشرات الفنية
 ti = TechnicalIndicators()
@@ -173,7 +198,7 @@ RF_MULT   = float(os.getenv("RF_MULT", 3.0))
 RF_LIVE_ONLY = True
 RF_HYST_BPS  = 6.0
 
-# Indicators
+# Indicators - Updated for 15m timeframe
 RSI_LEN = 14
 ADX_LEN = 14
 ATR_LEN = 14
@@ -1032,34 +1057,41 @@ def compute_flow_metrics(df):
 
 # =================== ADVANCED INDICATORS ===================
 def compute_advanced_indicators(df):
-    """حساب المؤشرات المتقدمة باستخدام مكتبة بديلة"""
+    """حساب المؤشرات المتقدمة باستخدام مكتبة بديلة - مطابقة لـ Bybit على 15m"""
     try:
         close = df['close'].astype(float)
         high = df['high'].astype(float)
         low = df['low'].astype(float)
         volume = df['volume'].astype(float)
         
-        # مؤشرات الترند
+        # مؤشرات الترند - مطابقة لـ Bybit
         sma_20 = ti.sma(close, 20)
         sma_50 = ti.sma(close, 50)
         ema_20 = ti.ema(close, 20)
         
-        # مؤشرات الزخم
+        # RSI - مطابق لـ Bybit (14 فترة)
         rsi = ti.rsi(close, 14)
-        macd_line, macd_signal_line, macd_hist_line = ti.macd(close)
-        stoch_k, stoch_d = ti.stoch(high, low, close)
         
-        # مؤشرات التقلب
+        # MACD - مطابق لـ Bybit (12,26,9)
+        macd_line, macd_signal_line, macd_hist_line = ti.macd(close, 12, 26, 9)
+        
+        # ستوكاستك - مطابق لـ Bybit (14,3,3)
+        stoch_k, stoch_d = ti.stoch(high, low, close, 14, 3)
+        
+        # ATR - مطابق لـ Bybit (14 فترة)
         atr = ti.atr(high, low, close, 14)
-        bollinger_upper, bollinger_middle, bollinger_lower = ti.bollinger_bands(close)
         
-        # مؤشرات الحجم
+        # بولينجر باند - مطابق لـ Bybit (20,2)
+        bollinger_upper, bollinger_middle, bollinger_lower = ti.bollinger_bands(close, 20, 2)
+        
+        # OBV - حجم الرصيد
         obv = ti.obv(close, volume)
         
-        # مؤشرات الاتجاه
+        # ADX - مطابق لـ Bybit (14 فترة)
         adx, plus_di, minus_di = ti.adx(high, low, close, 14)
         
-        return {
+        # جلب القيم الحالية فقط
+        result = {
             'sma_20': last_scalar(sma_20),
             'sma_50': last_scalar(sma_50),
             'ema_20': last_scalar(ema_20),
@@ -1079,29 +1111,43 @@ def compute_advanced_indicators(df):
             'minus_di': last_scalar(minus_di),
             'volume': last_scalar(volume)
         }
+        
+        # تسجيل تفصيلي للمؤشرات
+        log_i(f"📊 BYBIT MATCHED INDICATORS (15m):")
+        log_i(f"   RSI(14): {result['rsi']:.2f}")
+        log_i(f"   ADX(14): {result['adx']:.2f}")
+        log_i(f"   +DI(14): {result['plus_di']:.2f}")
+        log_i(f"   -DI(14): {result['minus_di']:.2f}")
+        log_i(f"   MACD(12,26,9): {result['macd']:.6f} | Signal: {result['macd_signal']:.6f} | Hist: {result['macd_hist']:.6f}")
+        log_i(f"   Stoch(14,3,3): K={result['stoch_k']:.2f} | D={result['stoch_d']:.2f}")
+        log_i(f"   ATR(14): {result['atr']:.6f}")
+        log_i(f"   Bollinger(20,2): Upper={result['bollinger_upper']:.6f} | Middle={result['bollinger_middle']:.6f} | Lower={result['bollinger_lower']:.6f}")
+        log_i(f"   SMA(20): {result['sma_20']:.6f} | SMA(50): {result['sma_50']:.6f} | EMA(20): {result['ema_20']:.6f}")
+        
+        return result
     except Exception as e:
-        log_w(f"Advanced indicators error: {e}")
+        log_e(f"Advanced indicators error: {e}")
         return {}
 
 def compute_indicators(df):
-    """حساب المؤشرات الأساسية"""
+    """حساب المؤشرات الأساسية - مطابقة لـ Bybit على 15m"""
     try:
         close = df['close'].astype(float)
         high = df['high'].astype(float)
         low = df['low'].astype(float)
         
-        # RSI
-        rsi = ti.rsi(close, RSI_LEN)
-        rsi_ma = ti.sma(rsi, RSI_MA_LEN)
+        # RSI - 14 فترة (مطابق لـ Bybit)
+        rsi = ti.rsi(close, 14)
+        rsi_ma = ti.sma(rsi, 9)  # متوسط RSI 9 فترات
         
-        # ADX
-        adx, plus_di, minus_di = ti.adx(high, low, close, ADX_LEN)
+        # ADX - 14 فترة (مطابق لـ Bybit)
+        adx, plus_di, minus_di = ti.adx(high, low, close, 14)
         di_spread = abs(plus_di - minus_di)
         
-        # ATR
-        atr = ti.atr(high, low, close, ATR_LEN)
+        # ATR - 14 فترة (مطابق لـ Bybit)
+        atr = ti.atr(high, low, close, 14)
         
-        return {
+        result = {
             'rsi': last_scalar(rsi),
             'rsi_ma': last_scalar(rsi_ma),
             'adx': last_scalar(adx),
@@ -1110,8 +1156,17 @@ def compute_indicators(df):
             'di_spread': last_scalar(di_spread),
             'atr': last_scalar(atr)
         }
+        
+        # تسجيل المؤشرات الأساسية
+        log_i(f"📈 BASIC INDICATORS (15m):")
+        log_i(f"   RSI: {result['rsi']:.2f} | RSI_MA: {result['rsi_ma']:.2f}")
+        log_i(f"   ADX: {result['adx']:.2f} | +DI: {result['plus_di']:.2f} | -DI: {result['minus_di']:.2f}")
+        log_i(f"   DI Spread: {result['di_spread']:.2f}")
+        log_i(f"   ATR: {result['atr']:.6f}")
+        
+        return result
     except Exception as e:
-        log_w(f"Indicators error: {e}")
+        log_e(f"Indicators error: {e}")
         return {}
 
 def compute_candles(df):
@@ -1826,10 +1881,10 @@ def close_market_strict(reason=""):
 
 # =================== PROFESSIONAL TRADING LOOP ===================
 def professional_trading_loop():
-    """الحلقة الرئيسية للتداول المحترف"""
+    """الحلقة الرئيسية للتداول المحترف - مع تحسين عرض المؤشرات"""
     global wait_for_next_signal_side
     
-    log_banner("STARTING ULTIMATE PROFESSIONAL TRADING BOT")
+    log_banner("STARTING ULTIMATE PROFESSIONAL TRADING BOT - BYBIT MATCHED 15m")
     log_i(f"🤖 Bot Version: {BOT_VERSION}")
     log_i(f"💱 Exchange: {EXCHANGE_NAME.upper()}")
     log_i(f"📈 Symbol: {SYMBOL}")
@@ -1853,6 +1908,14 @@ def professional_trading_loop():
                 time.sleep(BASE_SLEEP)
                 continue
             
+            # ===== حساب وعرض المؤشرات المفصلة =====
+            log_i("=" * 80)
+            log_i(f"🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            log_i(f"💰 Price: {current_price:.6f} | Balance: {balance:.2f} USDT")
+            
+            # حساب المؤشرات المتقدمة (تظهر تفاصيل كاملة)
+            advanced_indicators = compute_advanced_indicators(df)
+            
             # قرار مجلس الإدارة المحترف
             council_data = ultra_professional_council_ai(df)
             
@@ -1861,7 +1924,7 @@ def professional_trading_loop():
             STATE["last_ind"] = council_data.get("indicators", {})
             STATE["last_spread_bps"] = orderbook_spread_bps()
             
-            # عرض معلومات السوق المحترفة
+            # ===== عرض تحليل السوق المحترف =====
             if LOG_ADDONS:
                 log_i(f"🏪 MARKET ANALYSIS:")
                 log_i(f"   Phase: {council_data.get('analysis', {}).get('price_testing', {}).get('breakout_strength', 'neutral').upper()}")
@@ -1885,12 +1948,21 @@ def professional_trading_loop():
                 for i, log_msg in enumerate(council_data.get("logs", [])[-5:]):
                     log_i(f"   {i+1}. {log_msg}")
             
-            # إدارة المركز المفتوح
+            # ===== تحليل المؤشرات المفصل =====
+            indicators = council_data.get("indicators", {})
+            log_i(f"📊 TECHNICAL ANALYSIS SUMMARY (15m):")
+            log_i(f"   RSI(14): {indicators.get('rsi', 0):.2f} - {'OVERSOLD' if indicators.get('rsi', 0) < 30 else 'OVERBOUGHT' if indicators.get('rsi', 0) > 70 else 'NEUTRAL'}")
+            log_i(f"   ADX(14): {indicators.get('adx', 0):.2f} - {'STRONG TREND' if indicators.get('adx', 0) > 25 else 'WEAK TREND' if indicators.get('adx', 0) < 20 else 'MODERATE TREND'}")
+            log_i(f"   +DI/-DI: {indicators.get('plus_di', 0):.2f}/{indicators.get('minus_di', 0):.2f} - {'BULLISH' if indicators.get('plus_di', 0) > indicators.get('minus_di', 0) else 'BEARISH'}")
+            log_i(f"   MACD: {'BULLISH' if indicators.get('macd', 0) > indicators.get('macd_signal', 0) else 'BEARISH'}")
+            log_i(f"   Stoch: K={indicators.get('stoch_k', 0):.2f}, D={indicators.get('stoch_d', 0):.2f}")
+            
+            # ===== إدارة المركز المفتوح =====
             if STATE["open"]:
                 STATE["bars"] += 1
                 manage_professional_position(df, council_data, current_price)
             
-            # فتح صفقات جديدة
+            # ===== فتح صفقات جديدة =====
             if not STATE["open"]:
                 signal_side = None
                 signal_reason = ""
@@ -1970,6 +2042,8 @@ def professional_trading_loop():
             
             # الانتظار للدورة التالية
             sleep_time = NEAR_CLOSE_S if time_to_candle_close(df) <= 10 else BASE_SLEEP
+            log_i(f"⏰ Next update in {sleep_time}s | Candle closes in {time_to_candle_close(df)}s")
+            log_i("=" * 80)
             time.sleep(sleep_time)
             
         except Exception as e:
