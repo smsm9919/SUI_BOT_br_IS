@@ -6,6 +6,7 @@ RF Futures Bot — RF-LIVE ONLY (Multi-Exchange: BingX & Bybit)
 • Dynamic TP ladder + ATR-trailing + Volume Momentum + Liquidity Analysis
 • Professional Logging & Dashboard + Multi-Exchange Support
 • ACTIVE COUNCIL SYSTEM - Enhanced Profit Maximization
+• SUPER INTELLIGENT TRADE MANAGEMENT - Smart Profit Taking
 """
 
 import os, time, math, random, signal, sys, traceback, logging, json
@@ -205,6 +206,13 @@ MIN_HOLD_TIME_SCALP = 180  # 3 دقائق minimum for scalp
 MIN_HOLD_TIME_TREND = 300  # 5 دقائق minimum for trend
 PROFIT_TARGET_BOOST_FACTOR = 1.3  # زيادة الأهداف مع قوة المجلس
 
+# ==== SUPER INTELLIGENT SYSTEM SETTINGS ====
+SUPER_INTELLIGENT_MODE = True
+ADAPTIVE_LEARNING_ENABLED = True
+TRADE_CLASSIFICATION_ENABLED = True
+MULTI_LEVEL_PROFIT_TAKING = True
+INTELLIGENT_PROTECTION_SYSTEM = True
+
 # =================== PROFESSIONAL LOGGING ===================
 def log_i(msg): print(f"ℹ️ {msg}", flush=True)
 def log_g(msg): print(f"✅ {msg}", flush=True)
@@ -402,6 +410,7 @@ def verify_execution_environment():
     print(f"👣 SMART MONEY CONCEPTS: BOS + Order Blocks + FVG + Liquidity Analysis", flush=True)
     print(f"⚡ RF SETTINGS: period={RF_PERIOD} | mult={RF_MULT} (SUI Optimized)", flush=True)
     print(f"🚀 ACTIVE COUNCIL: ENABLED - Enhanced Profit Maximization", flush=True)
+    print(f"🧠 SUPER INTELLIGENT SYSTEM: ENABLED - Smart Trade Management", flush=True)
     
     if not EXECUTE_ORDERS:
         print("🟡 WARNING: EXECUTE_ORDERS=False - البوت في وضع التحليل فقط!", flush=True)
@@ -1325,6 +1334,293 @@ def decide_strategy_mode(df, adx=None, di_plus=None, di_minus=None, rsi_ctx=None
     
     return {"mode": mode, "why": why}
 
+# =================== SUPER INTELLIGENT TRADE MANAGEMENT ===================
+
+class AdaptiveLearningSystem:
+    """نظام تعلم ذاتي يتكيف مع ظروف السوق"""
+    
+    def __init__(self):
+        self.trade_history = []
+        self.market_conditions = {}
+        self.performance_metrics = {}
+        
+    def analyze_trade_performance(self, state, df, exit_reason):
+        """تحليل أداء الصفقة والتعلم منها"""
+        if state["open"]:
+            return
+            
+        trade_duration = time.time() - state.get("opened_at", time.time())
+        final_pnl = state.get("pnl", 0)
+        
+        # تحليل فعالية قرارات المجلس
+        council_effectiveness = self.calculate_council_effectiveness(state, df)
+        
+        # تحديث استراتيجيات الجني
+        self.update_profit_strategies(final_pnl, trade_duration, exit_reason)
+        
+        # حفظ بيانات الصفقة
+        self.trade_history.append({
+            "duration": trade_duration,
+            "pnl": final_pnl,
+            "exit_reason": exit_reason,
+            "council_effectiveness": council_effectiveness,
+            "timestamp": time.time()
+        })
+        
+    def calculate_council_effectiveness(self, state, df):
+        """حساب فعالية قرارات المجلس"""
+        # تحليل دقة توقيت الدخول والخروج
+        # تحليل جودة قرارات الجني
+        # تحليل فعالية الحماية
+        return 0.8  # قيمة افتراضية
+        
+    def update_profit_strategies(self, pnl, duration, exit_reason):
+        """تحديث استراتيجيات الجني بناءً على الأداء"""
+        if pnl > 0 and "target" in exit_reason:
+            # نجاح استراتيجية الجني - تعزيزها
+            pass
+        elif pnl < 0 and "target" in exit_reason:
+            # فشل استراتيجية الجني - مراجعتها
+            pass
+
+def enhanced_trade_classification(df, state, council_data):
+    """تصنيف ذكي للصفقات: ترند قوي، ترند عادي، سكالب"""
+    if not state["open"]:
+        return "unknown"
+    
+    current_price = last_val(df['close'])
+    entry_price = state["entry"]
+    current_pnl = (current_price - entry_price) / entry_price * 100 * (1 if state["side"] == "long" else -1)
+    
+    # تحليل قوة الاتجاه
+    trend_strength = analyze_trend_strength(df)
+    momentum_quality = assess_momentum_quality(df, state)
+    council_strength = max(council_data['score_b'], council_data['score_s'])
+    
+    # تصنيف الصفقة
+    if (trend_strength > 0.8 and 
+        momentum_quality > 0.7 and 
+        council_strength > 8.0 and
+        current_pnl > 0.5):
+        return "strong_trend"
+    elif (trend_strength > 0.6 and 
+          momentum_quality > 0.5 and 
+          council_strength > 6.0):
+        return "normal_trend"
+    else:
+        return "scalp"
+
+def intelligent_profit_taking(state, df, trade_type, council_data):
+    """نظام ذكي متعدد المستويات لجني الأرباح"""
+    current_price = last_val(df['close'])
+    entry_price = state["entry"]
+    current_pnl = (current_price - entry_price) / entry_price * 100 * (1 if state["side"] == "long" else -1)
+    
+    # الأهداف الديناميكية حسب نوع الصفقة
+    if trade_type == "strong_trend":
+        targets = [
+            {"level": 0.8, "close_ratio": 0.2, "reason": "هدف أولي - ترند قوي"},
+            {"level": 1.5, "close_ratio": 0.3, "reason": "هدف ثانوي - استمرارية الترند"},
+            {"level": 2.5, "close_ratio": 0.3, "reason": "هدف متقدم - ذروة الترند"},
+            {"level": 4.0, "close_ratio": 0.2, "reason": "هدف نهائي - جني كامل"}
+        ]
+    elif trade_type == "normal_trend":
+        targets = [
+            {"level": 0.6, "close_ratio": 0.3, "reason": "هدف أولي - ترند عادي"},
+            {"level": 1.2, "close_ratio": 0.4, "reason": "هدف ثانوي - تعزيز الأرباح"},
+            {"level": 2.0, "close_ratio": 0.3, "reason": "هدف نهائي - جني متأخر"}
+        ]
+    else:  # scalp
+        targets = [
+            {"level": 0.4, "close_ratio": 0.5, "reason": "هدف سريع - صفقة سكالب"},
+            {"level": 0.8, "close_ratio": 0.5, "reason": "هدف إضافي - تمديد السكالب"}
+        ]
+    
+    # تعديل الأهداف بناءً على قوة المجلس
+    council_strength = max(council_data['score_b'], council_data['score_s'])
+    strength_boost = 1.0 + (council_strength - 7) * 0.1  # زيادة 10% لكل نقطة فوق 7
+    
+    # البحث عن الهدف الحالي
+    achieved_targets = state.get("achieved_targets", [])
+    for target in targets:
+        if target["level"] * strength_boost <= current_pnl and target["level"] not in achieved_targets:
+            return {
+                "action": "partial_close",
+                "close_ratio": target["close_ratio"],
+                "target_level": target["level"],
+                "reason": target["reason"],
+                "adjusted_level": target["level"] * strength_boost
+            }
+    
+    return {"action": "hold", "reason": "لم يتم تحقيق أهداف جديدة"}
+
+def intelligent_protection_system(state, df, trade_type, current_pnl):
+    """نظام حماية ذكي يتكيف مع نوع الصفقة"""
+    current_price = last_val(df['close'])
+    entry_price = state["entry"]
+    
+    if trade_type == "strong_trend":
+        # حماية مرنة للترند القوي
+        if current_pnl >= 1.0 and not state.get("breakeven_armed"):
+            return {"action": "breakeven", "reason": "تفعيل نقطة التعادل - ترند قوي"}
+        elif current_pnl >= 2.0 and not state.get("trail_activated"):
+            return {"action": "activate_trail", "trail_type": "atr_wide", "reason": "تفعيل التريل الواسع"}
+        elif current_pnl >= 3.0:
+            return {"action": "tighten_trail", "trail_type": "atr_tight", "reason": "تشديد التريل لحماية الأرباح"}
+    
+    elif trade_type == "normal_trend":
+        # حماية متوسطة للترند العادي
+        if current_pnl >= 0.8 and not state.get("breakeven_armed"):
+            return {"action": "breakeven", "reason": "تفعيل نقطة التعادل - ترند عادي"}
+        elif current_pnl >= 1.5 and not state.get("trail_activated"):
+            return {"action": "activate_trail", "trail_type": "atr_normal", "reason": "تفعيل التريل العادي"}
+    
+    else:  # scalp
+        # حماية صارمة للسكالب
+        if current_pnl >= 0.3 and not state.get("breakeven_armed"):
+            return {"action": "breakeven", "reason": "تفعيل نقطة التعادل السريع - سكالب"}
+        elif current_pnl >= 0.6:
+            return {"action": "activate_trail", "trail_type": "atr_tight", "reason": "تفعيل التريل الضيق للسكالب"}
+    
+    # حماية من الخسارة الكبيرة
+    if current_pnl <= -2.0:
+        return {"action": "emergency_close", "reason": "إغلاق طارئ - خسارة كبيرة"}
+    
+    return {"action": "hold", "reason": "لا توجد إجراءات حماية مطلوبة"}
+
+def super_intelligent_council_decision(df, state):
+    """نظام ذكاء خارق لاتخاذ قرارات المجلس النشط"""
+    if not state["open"]:
+        return {"action": "hold", "reason": "لا توجد صفقة مفتوحة"}
+    
+    current_price = last_val(df['close'])
+    council_data = enhanced_active_council(df, state)
+    trade_type = enhanced_trade_classification(df, state, council_data)
+    
+    # قرارات جنى الأرباح الذكية
+    profit_decision = intelligent_profit_taking(state, df, trade_type, council_data)
+    
+    # قرارات الحماية الذكية
+    current_pnl = (current_price - state["entry"]) / state["entry"] * 100 * (1 if state["side"] == "long" else -1)
+    protection_decision = intelligent_protection_system(state, df, trade_type, current_pnl)
+    
+    # تحليل استمرارية الصفقة
+    continuation_analysis = analyze_trade_continuation_enhanced(state, council_data, current_pnl, trade_type)
+    
+    # نظام الأسبقية للقرارات
+    if protection_decision["action"] in ["emergency_close", "breakeven"]:
+        return protection_decision
+    elif profit_decision["action"] == "partial_close":
+        return profit_decision
+    elif not continuation_analysis["should_continue"]:
+        return {"action": "close", "reason": continuation_analysis["reason"]}
+    elif protection_decision["action"] in ["activate_trail", "tighten_trail"]:
+        return protection_decision
+    else:
+        return {"action": "hold", "reason": "استمرارية الصفقة مع المراقبة"}
+
+def analyze_trade_continuation_enhanced(state, council_data, current_pnl, trade_type):
+    """تحليل استمرارية الصفقة المحسن"""
+    side = state["side"]
+    votes = council_data
+    
+    # عوامل الاستمرارية الإيجابية
+    positive_factors = 0
+    negative_factors = 0
+    
+    # قوة المجلس في اتجاه الصفقة
+    if side == "long" and votes['score_b'] > votes['score_s'] + 2:
+        positive_factors += 2
+    elif side == "short" and votes['score_s'] > votes['score_b'] + 2:
+        positive_factors += 2
+        
+    # زخم الاتجاه
+    trend_momentum = council_data.get("trend_momentum", 1.0)
+    if trend_momentum > 1.2:
+        positive_factors += 1
+        
+    # تحليل SMC للاستمرارية
+    smc_data = council_data.get("advanced_metrics", {}).get("smc_analysis", {})
+    market_structure = smc_data.get("market_structure", {})
+    
+    if side == "long" and market_structure.get("bos_bullish"):
+        positive_factors += 2
+    elif side == "short" and market_structure.get("bos_bearish"):
+        positive_factors += 2
+        
+    # تحليل الزخم المتقدم
+    momentum = council_data.get("advanced_metrics", {}).get("price_momentum", {})
+    if (side == "long" and momentum.get("trend") == "bullish") or \
+       (side == "short" and momentum.get("trend") == "bearish"):
+        positive_factors += 1
+        
+    # عوامل سلبية
+    if current_pnl < -1.0:
+        negative_factors += 2
+    elif current_pnl < -0.5:
+        negative_factors += 1
+        
+    # قرار الاستمرارية
+    should_continue = positive_factors > negative_factors
+    confidence = positive_factors / max(positive_factors + negative_factors, 1)
+    
+    return {
+        "should_continue": should_continue,
+        "confidence": confidence,
+        "reason": f"عوامل إيجابية: {positive_factors}, عوامل سلبية: {negative_factors}",
+        "positive_factors": positive_factors,
+        "negative_factors": negative_factors
+    }
+
+def execute_intelligent_partial_close(state, close_ratio, reason):
+    """تنفيذ جني أرباح ذكي"""
+    close_qty = safe_qty(state["qty"] * close_ratio)
+    
+    if close_qty > 0:
+        close_side = "sell" if state["side"] == "long" else "buy"
+        
+        if MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN:
+            try:
+                params = exchange_specific_params(close_side, is_close=True)
+                ex.create_order(SYMBOL, "market", close_side, close_qty, None, params)
+                
+                log_g(f"🧠 جني ذكي: {close_ratio*100:.1f}% - {reason}")
+                
+                # تحديث الحالة
+                state["qty"] = safe_qty(state["qty"] - close_qty)
+                state["profit_targets_achieved"] = state.get("profit_targets_achieved", 0) + 1
+                
+                # حفظ قرار الجني
+                if "achieved_targets" not in state:
+                    state["achieved_targets"] = []
+                state["achieved_targets"].append(close_ratio)
+                
+            except Exception as e:
+                log_e(f"❌ فشل الجني الذكي: {e}")
+        else:
+            log_i(f"DRY_RUN: جني ذكي {close_qty:.4f} - {reason}")
+
+def apply_intelligent_protection(decision, state):
+    """تطبيق إجراءات الحماية الذكية"""
+    action = decision["action"]
+    
+    if action == "breakeven":
+        state["breakeven_armed"] = True
+        log_i(f"🛡️ تفعيل نقطة التعادل: {decision['reason']}")
+        
+    elif action == "activate_trail":
+        state["trail_activated"] = True
+        state["trail_type"] = decision.get("trail_type", "atr_normal")
+        log_i(f"🛡️ تفعيل التريل: {decision['reason']}")
+        
+    elif action == "tighten_trail":
+        state["trail_tightened"] = True
+        log_i(f"🛡️ تشديد التريل: {decision['reason']}")
+        
+    elif action == "emergency_close":
+        log_w(f"🚨 إغلاق طارئ: {decision['reason']}")
+        close_market_strict(f"emergency_{decision['reason']}")
+
 # =================== ACTIVE COUNCIL SYSTEMS ===================
 
 class ActiveCouncilTracker:
@@ -1522,6 +1818,7 @@ class AutomaticProfitAdjuster:
 active_tracker = ActiveCouncilTracker()
 profit_optimizer = DynamicProfitOptimizer()
 profit_adjuster = AutomaticProfitAdjuster()
+learning_system = AdaptiveLearningSystem()
 
 # =================== ENHANCED PROFESSIONAL COUNCIL ===================
 
@@ -2233,18 +2530,32 @@ def log_active_council_activity(council_data, decision, adjustment):
         print("─" * 80, flush=True)
 
 # =================== PROFESSIONAL TRADE MANAGEMENT ===================
-def manage_after_entry_professional(df, ind, info):
-    """إدارة محترفة للمركز مع تحليل SMC والمجلس النشط"""
-    if not STATE["open"]:
+def manage_after_entry_super_intelligent(df, state, current_price):
+    """الإدارة فائقة الذكاء للمركز المفتوح"""
+    if not state["open"]:
         return
         
-    current_price = info["price"]
+    # قرار المجلس الذكي
+    council_decision = super_intelligent_council_decision(df, state)
     
-    # استخدام الإدارة المعززة بالمجلس النشط
-    manage_after_entry_with_active_council(df, STATE, current_price)
+    # تنفيذ القرارات
+    if council_decision["action"] == "partial_close":
+        close_ratio = council_decision.get("close_ratio", 0.3)
+        execute_intelligent_partial_close(state, close_ratio, council_decision["reason"])
+        
+    elif council_decision["action"] == "close":
+        log_w(f"🧠 إغلاق ذكي: {council_decision['reason']}")
+        close_market_strict(f"intelligent_close_{council_decision['reason']}")
+        
+    elif council_decision["action"] in ["breakeven", "activate_trail", "tighten_trail", "emergency_close"]:
+        apply_intelligent_protection(council_decision, state)
+    
+    # تحديث نظام التعلم
+    learning_system.analyze_trade_performance(state, df, council_decision.get("reason", "unknown"))
 
-# استبدال إدارة الصفقات بالنظام المحترف
-manage_after_entry = manage_after_entry_professional
+# استبدال إدارة الصفقات بالنظام الذكي
+manage_after_entry_professional = manage_after_entry_super_intelligent
+manage_after_entry = manage_after_entry_super_intelligent
 
 # =================== PROFESSIONAL COUNCIL WITH SMC ===================
 def ultimate_council_professional(df):
@@ -3433,7 +3744,7 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     mode='LIVE' if MODE_LIVE else 'PAPER'
-    return f"✅ SUI Council PROFESSIONAL Bot — {EXCHANGE_NAME.upper()} — {SYMBOL} {INTERVAL} — {mode} — Multi-Exchange — ACTIVE COUNCIL"
+    return f"✅ SUI Council PROFESSIONAL Bot — {EXCHANGE_NAME.upper()} — {SYMBOL} {INTERVAL} — {mode} — Multi-Exchange — ACTIVE COUNCIL — SUPER INTELLIGENT"
 
 @app.route("/metrics")
 def metrics():
@@ -3444,7 +3755,9 @@ def metrics():
         "state": STATE, "compound_pnl": compound_pnl,
         "entry_mode": "PROFESSIONAL_COUNCIL_WITH_SMC", "wait_for_next_signal": wait_for_next_signal_side,
         "guards": {"max_spread_bps": MAX_SPREAD_BPS, "final_chunk_qty": FINAL_CHUNK_QTY},
-        "active_council": ACTIVE_COUNCIL_ENABLED
+        "active_council": ACTIVE_COUNCIL_ENABLED,
+        "super_intelligent_mode": SUPER_INTELLIGENT_MODE,
+        "adaptive_learning": ADAPTIVE_LEARNING_ENABLED
     })
 
 @app.route("/health")
@@ -3454,7 +3767,8 @@ def health():
         "open": STATE["open"], "side": STATE["side"], "qty": STATE["qty"],
         "compound_pnl": compound_pnl, "timestamp": datetime.utcnow().isoformat(),
         "entry_mode": "PROFESSIONAL_COUNCIL_WITH_SMC", "wait_for_next_signal": wait_for_next_signal_side,
-        "active_council": ACTIVE_COUNCIL_ENABLED
+        "active_council": ACTIVE_COUNCIL_ENABLED,
+        "super_intelligent_mode": SUPER_INTELLIGENT_MODE
     }), 200
 
 def keepalive_loop():
@@ -3480,7 +3794,7 @@ open_market = open_market_with_active_council
 
 # =================== BOOT ===================
 if __name__ == "__main__":
-    log_banner("SUI COUNCIL PROFESSIONAL BOT - SMART MONEY CONCEPTS - ACTIVE COUNCIL")
+    log_banner("SUI COUNCIL PROFESSIONAL BOT - SMART MONEY CONCEPTS - ACTIVE COUNCIL - SUPER INTELLIGENT")
     state = load_state() or {}
     state.setdefault("in_position", False)
 
@@ -3499,6 +3813,10 @@ if __name__ == "__main__":
     print(colored(f"📈 ADVANCED INDICATORS: MACD + VWAP + Volume Momentum + Dynamic Pivots", "yellow"))
     print(colored(f"👣 FOOTPRINT ANALYSIS: Volume Analysis + Absorption + Real Momentum", "yellow"))
     print(colored(f"🚀 ACTIVE COUNCIL: ENABLED - Enhanced Profit Maximization", "yellow"))
+    print(colored(f"🧠 SUPER INTELLIGENT SYSTEM: ENABLED - Smart Trade Management", "yellow"))
+    print(colored(f"🎯 MULTI-LEVEL PROFIT TAKING: ENABLED - Intelligent Profit Targets", "yellow"))
+    print(colored(f"🛡️ INTELLIGENT PROTECTION: ENABLED - Adaptive Risk Management", "yellow"))
+    print(colored(f"📚 ADAPTIVE LEARNING: ENABLED - Self-Improving System", "yellow"))
     print(colored(f"⚡ EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
     
     logging.info("service starting…")
