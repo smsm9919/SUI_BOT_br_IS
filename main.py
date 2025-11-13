@@ -64,6 +64,11 @@ LEVERAGE = int(os.getenv("LEVERAGE", 10))
 RISK_ALLOC = float(os.getenv("RISK_ALLOC", 0.60))
 POSITION_MODE = os.getenv("POSITION_MODE", "oneway")
 
+# =================== ENHANCED COUNCIL VOTING SYSTEM ===================
+COUNCIL_MEMBERS = 5  # عدد أعضاء المجلس
+MIN_VOTES_FOR_ENTRY = 4  # الحد الأدنى للأصوات للدخول
+MIN_CONFIDENCE = 70  # الحد الأدنى للثقة
+
 # =================== ENHANCED INDICATOR SETTINGS ===================
 # Moving Averages for Trend Analysis
 EMA_FAST = 8
@@ -604,6 +609,328 @@ class AdvancedCandlestickAnalysis:
         
         return {"pattern": pattern, "strength": strength, "direction": direction}
 
+# =================== ENHANCED COUNCIL VOTING SYSTEM ===================
+class TradingCouncilVoting:
+    """نظام تصويت مجلس التداول المتقدم"""
+    
+    def __init__(self):
+        self.members = [
+            "SMC_Expert",
+            "Technical_Analyst", 
+            "Volume_Specialist",
+            "Price_Action_Pro",
+            "Risk_Manager"
+        ]
+        self.votes = {}
+        self.decision_threshold = MIN_VOTES_FOR_ENTRY
+        
+    def conduct_voting(self, df, current_price):
+        """إجراء تصويت شامل للمجلس"""
+        self.votes = {member: {"vote": "wait", "confidence": 0, "reason": ""} for member in self.members}
+        
+        # تصويت كل عضو
+        self._smc_expert_vote(df, current_price)
+        self._technical_analyst_vote(df, current_price)
+        self._volume_specialist_vote(df, current_price)
+        self._price_action_pro_vote(df, current_price)
+        self._risk_manager_vote(df, current_price)
+        
+        return self._calculate_final_decision()
+    
+    def _smc_expert_vote(self, df, current_price):
+        """تصويت خبير SMC"""
+        smc_engine = SmartMoneyConceptsEngine()
+        
+        fvg_analysis = smc_engine.identify_fvg(df)
+        ob_analysis = smc_engine.identify_order_blocks(df)
+        ms_analysis = smc_engine.analyze_market_structure(df)
+        liquidity_analysis = smc_engine.identify_liquidity_zones(df)
+        
+        score_bullish = 0
+        score_bearish = 0
+        reasons = []
+        
+        # تحليل FVG
+        for fvg in fvg_analysis['bullish_fvg']:
+            if fvg['low'] <= current_price <= fvg['high']:
+                score_bullish += 2
+                reasons.append(f"داخل FVG صاعد ({fvg['size']:.2f}%)")
+        
+        for fvg in fvg_analysis['bearish_fvg']:
+            if fvg['low'] <= current_price <= fvg['high']:
+                score_bearish += 2
+                reasons.append(f"داخل FVG هابط ({fvg['size']:.2f}%)")
+        
+        # تحليل Order Blocks
+        for ob in ob_analysis['bullish_ob']:
+            if ob['low'] <= current_price <= ob['high']:
+                score_bullish += 3
+                reasons.append(f"داخل OB صاعد ({ob['strength']:.2f}%)")
+        
+        for ob in ob_analysis['bearish_ob']:
+            if ob['low'] <= current_price <= ob['high']:
+                score_bearish += 3
+                reasons.append(f"داخل OB هابط ({ob['strength']:.2f}%)")
+        
+        # هيكل السوق
+        if ms_analysis['bos_bullish']:
+            score_bullish += 4
+            reasons.append("BOS صاعد")
+        
+        if ms_analysis['bos_bearish']:
+            score_bearish += 4
+            reasons.append("BOS هابط")
+        
+        # تحديد التصويت
+        if score_bullish > score_bearish + 2:
+            self.votes["SMC_Expert"] = {
+                "vote": "buy", 
+                "confidence": min(100, score_bullish * 10),
+                "reason": " | ".join(reasons[:3])
+            }
+        elif score_bearish > score_bullish + 2:
+            self.votes["SMC_Expert"] = {
+                "vote": "sell", 
+                "confidence": min(100, score_bearish * 10),
+                "reason": " | ".join(reasons[:3])
+            }
+    
+    def _technical_analyst_vote(self, df, current_price):
+        """تصويت المحلل الفني"""
+        indicator_system = AdvancedIndicatorSystem()
+        
+        close = df['close']
+        high = df['high']
+        low = df['low']
+        
+        # حساب المؤشرات
+        ema_fast = indicator_system.calculate_ema(close, 8).iloc[-1]
+        ema_medium = indicator_system.calculate_ema(close, 21).iloc[-1]
+        ema_slow = indicator_system.calculate_ema(close, 50).iloc[-1]
+        
+        rsi = indicator_system.calculate_rsi(close, 14).iloc[-1]
+        macd_data = indicator_system.calculate_macd(close)
+        macd_line = macd_data['macd'].iloc[-1]
+        signal_line = macd_data['signal'].iloc[-1]
+        
+        score_bullish = 0
+        score_bearish = 0
+        reasons = []
+        
+        # تحليل المتوسطات
+        if ema_fast > ema_medium > ema_slow:
+            score_bullish += 3
+            reasons.append("المتوسطات مرتبة تصاعدياً")
+        elif ema_fast < ema_medium < ema_slow:
+            score_bearish += 3
+            reasons.append("المتوسطات مرتبة تنازلياً")
+        
+        # تحليل RSI
+        if rsi < 35:
+            score_bullish += 2
+            reasons.append(f"RSI في منطقة ذروة البيع ({rsi:.1f})")
+        elif rsi > 65:
+            score_bearish += 2
+            reasons.append(f"RSI في منطقة ذروة الشراء ({rsi:.1f})")
+        
+        # تحليل MACD
+        if macd_line > signal_line:
+            score_bullish += 2
+            reasons.append("MACD إيجابي")
+        elif macd_line < signal_line:
+            score_bearish += 2
+            reasons.append("MACD سلبي")
+        
+        # تحديد التصويت
+        if score_bullish > score_bearish:
+            self.votes["Technical_Analyst"] = {
+                "vote": "buy", 
+                "confidence": min(100, score_bullish * 15),
+                "reason": " | ".join(reasons[:3])
+            }
+        elif score_bearish > score_bullish:
+            self.votes["Technical_Analyst"] = {
+                "vote": "sell", 
+                "confidence": min(100, score_bearish * 15),
+                "reason": " | ".join(reasons[:3])
+            }
+    
+    def _volume_specialist_vote(self, df, current_price):
+        """تصويت أخصائي الحجم"""
+        volume = df['volume']
+        close = df['close']
+        
+        # متوسط الحجم
+        volume_ma = volume.rolling(20).mean().iloc[-1]
+        current_volume = volume.iloc[-1]
+        volume_ratio = current_volume / volume_ma if volume_ma > 0 else 1
+        
+        # زخم السعر
+        price_change_5 = (close.iloc[-1] / close.iloc[-5] - 1) * 100
+        
+        score_bullish = 0
+        score_bearish = 0
+        reasons = []
+        
+        # تحليل الحجم
+        if volume_ratio > 1.5 and price_change_5 > 0:
+            score_bullish += 3
+            reasons.append(f"حجم عالي مع صعود ({volume_ratio:.1f}x)")
+        elif volume_ratio > 1.5 and price_change_5 < 0:
+            score_bearish += 3
+            reasons.append(f"حجم عالي مع هبوط ({volume_ratio:.1f}x)")
+        
+        # تحليل التباعد
+        if volume_ratio > 1.2 and abs(price_change_5) < 0.5:
+            if current_price > close.iloc[-10]:
+                score_bullish += 2
+                reasons.append("تراكم مع استقرار السعر")
+            else:
+                score_bearish += 2
+                reasons.append("توزيع مع استقرار السعر")
+        
+        # تحديد التصويت
+        if score_bullish > score_bearish:
+            self.votes["Volume_Specialist"] = {
+                "vote": "buy" if score_bullish > 0 else "wait", 
+                "confidence": min(100, score_bullish * 20),
+                "reason": " | ".join(reasons[:2])
+            }
+        elif score_bearish > score_bullish:
+            self.votes["Volume_Specialist"] = {
+                "vote": "sell" if score_bearish > 0 else "wait", 
+                "confidence": min(100, score_bearish * 20),
+                "reason": " | ".join(reasons[:2])
+            }
+    
+    def _price_action_pro_vote(self, df, current_price):
+        """تصويت خبير حركة السعر"""
+        candle_analysis = AdvancedCandlestickAnalysis()
+        patterns = candle_analysis.analyze_patterns(df)
+        
+        score_bullish = 0
+        score_bearish = 0
+        reasons = []
+        
+        # تحليل أنماط الشموع
+        if patterns['direction'] == 'bullish':
+            score_bullish += patterns['strength'] * 10
+            reasons.append(f"نمط {patterns['pattern']} صاعد")
+        elif patterns['direction'] == 'bearish':
+            score_bearish += patterns['strength'] * 10
+            reasons.append(f"نمط {patterns['pattern']} هابط")
+        
+        # تحليل القمم والقيعان
+        high = df['high']
+        low = df['low']
+        
+        if high.iloc[-1] > high.iloc[-2] > high.iloc[-3]:
+            score_bullish += 2
+            reasons.append("قمم متصاعدة")
+        elif low.iloc[-1] < low.iloc[-2] < low.iloc[-3]:
+            score_bearish += 2
+            reasons.append("قيعان متهاوية")
+        
+        # تحديد التصويت
+        if score_bullish > score_bearish:
+            self.votes["Price_Action_Pro"] = {
+                "vote": "buy", 
+                "confidence": min(100, score_bullish),
+                "reason": " | ".join(reasons[:2])
+            }
+        elif score_bearish > score_bullish:
+            self.votes["Price_Action_Pro"] = {
+                "vote": "sell", 
+                "confidence": min(100, score_bearish),
+                "reason": " | ".join(reasons[:2])
+            }
+    
+    def _risk_manager_vote(self, df, current_price):
+        """تصويت مدير المخاطر"""
+        atr = AdvancedIndicatorSystem.calculate_atr(df['high'], df['low'], df['close'], 14).iloc[-1]
+        volatility_ratio = atr / current_price * 100
+        
+        # تحليل المخاطر
+        risk_score = 0
+        reasons = []
+        
+        if volatility_ratio > 2.0:
+            risk_score += 3
+            reasons.append(f"تقلبات عالية ({volatility_ratio:.2f}%)")
+        
+        # تحليل الاتجاه العام
+        ema_50 = AdvancedIndicatorSystem.calculate_ema(df['close'], 50).iloc[-1]
+        ema_100 = AdvancedIndicatorSystem.calculate_ema(df['close'], 100).iloc[-1]
+        
+        if current_price < ema_50 and ema_50 < ema_100:
+            risk_score += 2
+            reasons.append("اتجاه هابط قوي")
+        elif current_price > ema_50 and ema_50 > ema_100:
+            risk_score -= 2
+            reasons.append("اتجاه صاعد قوي")
+        
+        # تحديد التصويت (مدير المخاطر أكثر تحفظاً)
+        if risk_score >= 3:
+            self.votes["Risk_Manager"] = {
+                "vote": "wait", 
+                "confidence": min(100, risk_score * 20),
+                "reason": " | ".join(reasons)
+            }
+        else:
+            self.votes["Risk_Manager"] = {
+                "vote": "neutral", 
+                "confidence": 50,
+                "reason": "مخاطر مقبولة"
+            }
+    
+    def _calculate_final_decision(self):
+        """حساب القرار النهائي"""
+        vote_counts = {"buy": 0, "sell": 0, "wait": 0, "neutral": 0}
+        total_confidence = 0
+        all_reasons = []
+        
+        for member, vote_data in self.votes.items():
+            vote = vote_data["vote"]
+            confidence = vote_data["confidence"]
+            reason = vote_data["reason"]
+            
+            if vote in vote_counts:
+                vote_counts[vote] += 1
+            
+            total_confidence += confidence
+            if reason:
+                all_reasons.append(f"{member}: {reason}")
+        
+        avg_confidence = total_confidence / len(self.votes) if self.votes else 0
+        
+        # اتخاذ القرار بناءً على الأغلبية والثقة
+        if (vote_counts["buy"] >= self.decision_threshold and 
+            avg_confidence >= MIN_CONFIDENCE):
+            return {
+                "decision": "buy",
+                "confidence": avg_confidence,
+                "vote_counts": vote_counts,
+                "reasons": all_reasons,
+                "details": self.votes
+            }
+        elif (vote_counts["sell"] >= self.decision_threshold and 
+              avg_confidence >= MIN_CONFIDENCE):
+            return {
+                "decision": "sell",
+                "confidence": avg_confidence,
+                "vote_counts": vote_counts,
+                "reasons": all_reasons,
+                "details": self.votes
+            }
+        else:
+            return {
+                "decision": "wait",
+                "confidence": avg_confidence,
+                "vote_counts": vote_counts,
+                "reasons": all_reasons,
+                "details": self.votes
+            }
+
 # =================== ENHANCED TRADING COUNCIL ===================
 class IntelligentTradingCouncil:
     """مجلس التداول الذكي المحسن"""
@@ -612,452 +939,31 @@ class IntelligentTradingCouncil:
         self.indicator_system = AdvancedIndicatorSystem()
         self.smc_engine = SmartMoneyConceptsEngine()
         self.candle_analysis = AdvancedCandlestickAnalysis()
+        self.voting_system = TradingCouncilVoting()
         
     def analyze_market(self, df):
-        """تحليل السوق الشامل"""
+        """تحليل السوق الشامل مع نظام التصويت"""
         if len(df) < 100:
             return self._get_default_analysis()
         
         try:
-            # تحليل SMC المتقدم
-            smc_analysis = self._analyze_smc(df)
+            current_price = df['close'].iloc[-1]
             
-            # تحليل المؤشرات التقنية
-            technical_analysis = self._analyze_technical_indicators(df)
+            # إجراء التصويت
+            voting_result = self.voting_system.conduct_voting(df, current_price)
             
-            # تحليل الشموع
-            candle_analysis = self.candle_analysis.analyze_patterns(df)
-            
-            # تحليل الزخم والحجم
-            momentum_analysis = self._analyze_momentum(df)
-            
-            # اتخاذ القرار النهائي
-            final_decision = self._make_final_decision(
-                smc_analysis, technical_analysis, candle_analysis, momentum_analysis
-            )
-            
-            return final_decision
+            return voting_result
             
         except Exception as e:
             log.error(f"خطأ في تحليل السوق: {e}")
             return self._get_default_analysis()
     
-    def _analyze_smc(self, df):
-        """تحليل SMC المتقدم"""
-        fvg_analysis = self.smc_engine.identify_fvg(df)
-        ob_analysis = self.smc_engine.identify_order_blocks(df)
-        ms_analysis = self.smc_engine.analyze_market_structure(df)
-        liquidity_analysis = self.smc_engine.identify_liquidity_zones(df)
-        
-        current_price = df['close'].iloc[-1]
-        
-        # حساب نقاط SMC
-        smc_score_bullish = 0
-        smc_score_bearish = 0
-        reasons = []
-        
-        # تحليل FVG
-        for fvg in fvg_analysis['bullish_fvg']:
-            if fvg['low'] <= current_price <= fvg['high']:
-                smc_score_bullish += 2
-                reasons.append(f"FVG صاعد: {fvg['size']:.2f}%")
-        
-        for fvg in fvg_analysis['bearish_fvg']:
-            if fvg['low'] <= current_price <= fvg['high']:
-                smc_score_bearish += 2
-                reasons.append(f"FVG هابط: {fvg['size']:.2f}%")
-        
-        # تحليل Order Blocks
-        for ob in ob_analysis['bullish_ob']:
-            if ob['low'] <= current_price <= ob['high']:
-                smc_score_bullish += 3
-                reasons.append(f"OB صاعد: {ob['strength']:.2f}%")
-        
-        for ob in ob_analysis['bearish_ob']:
-            if ob['low'] <= current_price <= ob['high']:
-                smc_score_bearish += 3
-                reasons.append(f"OB هابط: {ob['strength']:.2f}%")
-        
-        # تحليل هيكل السوق
-        if ms_analysis['bos_bullish']:
-            smc_score_bullish += 4
-            reasons.append("BOS صاعد")
-        
-        if ms_analysis['bos_bearish']:
-            smc_score_bearish += 4
-            reasons.append("BOS هابط")
-        
-        if ms_analysis['choch_bullish']:
-            smc_score_bullish += 3
-            reasons.append("CHoCH صاعد")
-        
-        if ms_analysis['choch_bearish']:
-            smc_score_bearish += 3
-            reasons.append("CHoCH هابط")
-        
-        # تحليل السيولة
-        for zone in liquidity_analysis['buy_zones']:
-            if abs(current_price - zone) / zone <= 0.02:
-                smc_score_bullish += 2
-                reasons.append("قرب منطقة شراء")
-        
-        for zone in liquidity_analysis['sell_zones']:
-            if abs(current_price - zone) / zone <= 0.02:
-                smc_score_bearish += 2
-                reasons.append("قرب منطقة بيع")
-        
-        return {
-            'score_bullish': smc_score_bullish,
-            'score_bearish': smc_score_bearish,
-            'reasons': reasons,
-            'details': {
-                'fvg': fvg_analysis,
-                'order_blocks': ob_analysis,
-                'market_structure': ms_analysis,
-                'liquidity': liquidity_analysis
-            }
-        }
-    
-    def _analyze_technical_indicators(self, df):
-        """تحليل المؤشرات التقنية"""
-        close = df['close']
-        high = df['high']
-        low = df['low']
-        
-        # حساب المؤشرات
-        ema_fast = self.indicator_system.calculate_ema(close, EMA_FAST)
-        ema_medium = self.indicator_system.calculate_ema(close, EMA_MEDIUM)
-        ema_slow = self.indicator_system.calculate_ema(close, EMA_SLOW)
-        
-        rsi = self.indicator_system.calculate_rsi(close, RSI_PERIOD)
-        macd_data = self.indicator_system.calculate_macd(close)
-        stoch_data = self.indicator_system.calculate_stochastic(high, low, close)
-        adx_data = self.indicator_system.calculate_adx(high, low, close)
-        bb_data = self.indicator_system.calculate_bollinger_bands(close)
-        
-        # تحليل التقاطعات
-        ema_cross = self._analyze_ema_cross(ema_fast, ema_medium, ema_slow)
-        macd_signal = self._analyze_macd_signal(macd_data)
-        rsi_signal = self._analyze_rsi_signal(rsi)
-        stoch_signal = self._analyze_stochastic_signal(stoch_data)
-        bb_signal = self._analyze_bollinger_signal(close, bb_data)
-        adx_signal = self._analyze_adx_signal(adx_data)
-        
-        # حساب النقاط
-        tech_score_bullish = 0
-        tech_score_bearish = 0
-        reasons = []
-        
-        # تقاطعات EMA
-        if ema_cross['signal'] == 'bullish':
-            tech_score_bullish += 3
-            reasons.append(f"تقاطع EMA: {ema_cross['strength']}")
-        elif ema_cross['signal'] == 'bearish':
-            tech_score_bearish += 3
-            reasons.append(f"تقاطع EMA: {ema_cross['strength']}")
-        
-        # إشارات MACD
-        if macd_signal == 'bullish':
-            tech_score_bullish += 2
-            reasons.append("MACD صاعد")
-        elif macd_signal == 'bearish':
-            tech_score_bearish += 2
-            reasons.append("MACD هابط")
-        
-        # إشارات RSI
-        if rsi_signal == 'bullish':
-            tech_score_bullish += 2
-            reasons.append("RSI في منطقة ذروة البيع")
-        elif rsi_signal == 'bearish':
-            tech_score_bearish += 2
-            reasons.append("RSI في منطقة ذروة الشراء")
-        
-        # إشارات ستوكاستيك
-        if stoch_signal == 'bullish':
-            tech_score_bullish += 1
-            reasons.append("ستوكاستيك صاعد")
-        elif stoch_signal == 'bearish':
-            tech_score_bearish += 1
-            reasons.append("ستوكاستيك هابط")
-        
-        # إشارات بولينجر
-        if bb_signal == 'bullish':
-            tech_score_bullish += 1
-            reasons.append("سعر عند النطاق السفلي")
-        elif bb_signal == 'bearish':
-            tech_score_bearish += 1
-            reasons.append("سعر عند النطاق العلوي")
-        
-        # قوة الاتجاه (ADX)
-        if adx_signal['trend_strength'] == 'strong':
-            if adx_signal['direction'] == 'bullish':
-                tech_score_bullish += 2
-            elif adx_signal['direction'] == 'bearish':
-                tech_score_bearish += 2
-            reasons.append(f"اتجاه قوي: {adx_signal['direction']}")
-        
-        return {
-            'score_bullish': tech_score_bullish,
-            'score_bearish': tech_score_bearish,
-            'reasons': reasons,
-            'details': {
-                'ema_cross': ema_cross,
-                'macd': macd_signal,
-                'rsi': rsi_signal,
-                'stochastic': stoch_signal,
-                'bollinger': bb_signal,
-                'adx': adx_signal
-            }
-        }
-    
-    def _analyze_ema_cross(self, ema_fast, ema_medium, ema_slow):
-        """تحليل تقاطعات EMA"""
-        current_fast = ema_fast.iloc[-1]
-        current_medium = ema_medium.iloc[-1]
-        current_slow = ema_slow.iloc[-1]
-        
-        prev_fast = ema_fast.iloc[-2]
-        prev_medium = ema_medium.iloc[-2]
-        prev_slow = ema_slow.iloc[-2]
-        
-        # تحليل التقاطعات
-        fast_above_medium = current_fast > current_medium
-        fast_above_slow = current_fast > current_slow
-        medium_above_slow = current_medium > current_slow
-        
-        # محاذاة المتوسطات
-        alignment = 0
-        if fast_above_medium and medium_above_slow:
-            alignment = 3  # محاذاة صاعدة قوية
-        elif not fast_above_medium and not medium_above_slow:
-            alignment = -3  # محاذاة هابطة قوية
-        elif fast_above_medium:
-            alignment = 1  # محاذاة صاعدة ضعيفة
-        else:
-            alignment = -1  # محاذاة هابطة ضعيفة
-        
-        # إشارة التقاطع
-        signal = "neutral"
-        strength = "weak"
-        
-        if alignment >= 2:
-            signal = "bullish"
-            strength = "strong"
-        elif alignment <= -2:
-            signal = "bearish"
-            strength = "strong"
-        elif alignment == 1:
-            signal = "bullish"
-            strength = "weak"
-        elif alignment == -1:
-            signal = "bearish"
-            strength = "weak"
-        
-        return {
-            'signal': signal,
-            'strength': strength,
-            'alignment': alignment
-        }
-    
-    def _analyze_macd_signal(self, macd_data):
-        """تحليل إشارات MACD"""
-        macd_line = macd_data['macd']
-        signal_line = macd_data['signal']
-        histogram = macd_data['histogram']
-        
-        current_macd = macd_line.iloc[-1]
-        current_signal = signal_line.iloc[-1]
-        current_hist = histogram.iloc[-1]
-        
-        prev_macd = macd_line.iloc[-2]
-        prev_signal = signal_line.iloc[-2]
-        
-        # تقاطع الخطوط
-        if prev_macd <= prev_signal and current_macd > current_signal:
-            return "bullish"
-        elif prev_macd >= prev_signal and current_macd < current_signal:
-            return "bearish"
-        
-        # فوق/تحت الصفر
-        if current_macd > 0 and current_hist > 0:
-            return "bullish"
-        elif current_macd < 0 and current_hist < 0:
-            return "bearish"
-        
-        return "neutral"
-    
-    def _analyze_rsi_signal(self, rsi):
-        """تحليل إشارات RSI"""
-        current_rsi = rsi.iloc[-1]
-        
-        if current_rsi < RSI_OVERSOLD:
-            return "bullish"
-        elif current_rsi > RSI_OVERBOUGHT:
-            return "bearish"
-        elif current_rsi < RSI_NEUTRAL_HIGH and current_rsi > RSI_NEUTRAL_LOW:
-            return "neutral"
-        
-        return "neutral"
-    
-    def _analyze_stochastic_signal(self, stoch_data):
-        """تحليل إشارات ستوكاستيك"""
-        k = stoch_data['k']
-        d = stoch_data['d']
-        
-        current_k = k.iloc[-1]
-        current_d = d.iloc[-1]
-        prev_k = k.iloc[-2]
-        prev_d = d.iloc[-2]
-        
-        # مناطق ذروة الشراء/البيع
-        if current_k < 20 and current_d < 20:
-            return "bullish"
-        elif current_k > 80 and current_d > 80:
-            return "bearish"
-        
-        # تقاطع الخطوط
-        if prev_k <= prev_d and current_k > current_d:
-            return "bullish"
-        elif prev_k >= prev_d and current_k < current_d:
-            return "bearish"
-        
-        return "neutral"
-    
-    def _analyze_bollinger_signal(self, close, bb_data):
-        """تحليل إشارات بولينجر"""
-        current_price = close.iloc[-1]
-        upper = bb_data['upper'].iloc[-1]
-        lower = bb_data['lower'].iloc[-1]
-        middle = bb_data['middle'].iloc[-1]
-        
-        if current_price <= lower:
-            return "bullish"
-        elif current_price >= upper:
-            return "bearish"
-        
-        return "neutral"
-    
-    def _analyze_adx_signal(self, adx_data):
-        """تحليل إشارات ADX"""
-        adx = adx_data['adx'].iloc[-1]
-        plus_di = adx_data['plus_di'].iloc[-1]
-        minus_di = adx_data['minus_di'].iloc[-1]
-        
-        trend_strength = "weak"
-        if adx > 25:
-            trend_strength = "strong"
-        elif adx > 20:
-            trend_strength = "medium"
-        
-        direction = "neutral"
-        if plus_di > minus_di:
-            direction = "bullish"
-        elif minus_di > plus_di:
-            direction = "bearish"
-        
-        return {
-            'trend_strength': trend_strength,
-            'direction': direction,
-            'adx_value': adx
-        }
-    
-    def _analyze_momentum(self, df):
-        """تحليل الزخم والحجم"""
-        close = df['close']
-        volume = df['volume']
-        
-        # زخم السعر
-        price_momentum_5 = (close.iloc[-1] / close.iloc[-5] - 1) * 100
-        price_momentum_10 = (close.iloc[-1] / close.iloc[-10] - 1) * 100
-        
-        # زخم الحجم
-        volume_ma = volume.rolling(20).mean()
-        current_volume_ratio = volume.iloc[-1] / volume_ma.iloc[-1] if volume_ma.iloc[-1] > 0 else 1
-        
-        momentum_score_bullish = 0
-        momentum_score_bearish = 0
-        reasons = []
-        
-        # زخم السعر
-        if price_momentum_5 > 0.5 and price_momentum_10 > 0.3:
-            momentum_score_bullish += 2
-            reasons.append(f"زخم صاعد: {price_momentum_5:.2f}%")
-        elif price_momentum_5 < -0.5 and price_momentum_10 < -0.3:
-            momentum_score_bearish += 2
-            reasons.append(f"زخم هابط: {price_momentum_5:.2f}%")
-        
-        # زخم الحجم
-        if current_volume_ratio > 1.2:
-            if price_momentum_5 > 0:
-                momentum_score_bullish += 1
-                reasons.append(f"حجم عالي مع صعود: {current_volume_ratio:.2f}x")
-            else:
-                momentum_score_bearish += 1
-                reasons.append(f"حجم عالي مع هبوط: {current_volume_ratio:.2f}x")
-        
-        return {
-            'score_bullish': momentum_score_bullish,
-            'score_bearish': momentum_score_bearish,
-            'reasons': reasons
-        }
-    
-    def _make_final_decision(self, smc_analysis, technical_analysis, candle_analysis, momentum_analysis):
-        """اتخاذ القرار النهائي"""
-        # جمع النقاط
-        total_bullish = (
-            smc_analysis['score_bullish'] +
-            technical_analysis['score_bullish'] +
-            (3 if candle_analysis['direction'] == 'bullish' else 0) +
-            momentum_analysis['score_bullish']
-        )
-        
-        total_bearish = (
-            smc_analysis['score_bearish'] +
-            technical_analysis['score_bearish'] +
-            (3 if candle_analysis['direction'] == 'bearish' else 0) +
-            momentum_analysis['score_bearish']
-        )
-        
-        # جمع الأسباب
-        all_reasons = (
-            smc_analysis['reasons'] +
-            technical_analysis['reasons'] +
-            ([f"نمط شموع: {candle_analysis['pattern']}"] if candle_analysis['pattern'] != 'none' else []) +
-            momentum_analysis['reasons']
-        )
-        
-        # اتخاذ القرار
-        decision = "hold"
-        confidence = 0
-        
-        if total_bullish > total_bearish + 5:  # فرق 5 نقاط على الأقل
-            decision = "buy"
-            confidence = min(100, total_bullish * 5)
-        elif total_bearish > total_bullish + 5:
-            decision = "sell"
-            confidence = min(100, total_bearish * 5)
-        
-        return {
-            'decision': decision,
-            'confidence': confidence,
-            'total_bullish': total_bullish,
-            'total_bearish': total_bearish,
-            'reasons': all_reasons,
-            'details': {
-                'smc': smc_analysis,
-                'technical': technical_analysis,
-                'candles': candle_analysis,
-                'momentum': momentum_analysis
-            }
-        }
-    
     def _get_default_analysis(self):
         """تحليل افتراضي عند عدم كفاية البيانات"""
         return {
-            'decision': 'hold',
+            'decision': 'wait',
             'confidence': 0,
-            'total_bullish': 0,
-            'total_bearish': 0,
+            'vote_counts': {'buy': 0, 'sell': 0, 'wait': 5, 'neutral': 0},
             'reasons': ['بيانات غير كافية'],
             'details': {}
         }
@@ -1072,29 +978,84 @@ class ProfessionalTradeManager:
         self.trade_history = []
         
     def evaluate_entry(self, df, current_price):
-        """تقييم فرص الدخول"""
+        """تقييم فرص الدخول مع التحقق من المنطقة القوية"""
         analysis = self.council.analyze_market(df)
         
-        if analysis['decision'] in ['buy', 'sell'] and analysis['confidence'] >= 60:
+        # التحقق من قوة المنطقة
+        zone_analysis = self._analyze_trade_zone(df, current_price, analysis['decision'])
+        
+        if (analysis['decision'] in ['buy', 'sell'] and 
+            analysis['confidence'] >= MIN_CONFIDENCE and
+            zone_analysis['is_strong_zone']):
+            
             return {
                 'action': analysis['decision'],
                 'confidence': analysis['confidence'],
                 'price': current_price,
-                'reasons': analysis['reasons'],
-                'analysis': analysis
+                'reasons': analysis['reasons'] + zone_analysis['reasons'],
+                'analysis': analysis,
+                'zone_analysis': zone_analysis
             }
         
         return {
             'action': 'wait',
             'confidence': analysis['confidence'],
-            'reasons': analysis['reasons']
+            'reasons': analysis['reasons'],
+            'zone_analysis': zone_analysis
+        }
+    
+    def _analyze_trade_zone(self, df, current_price, direction):
+        """تحليل قوة منطقة التداول"""
+        smc_engine = SmartMoneyConceptsEngine()
+        
+        fvg_analysis = smc_engine.identify_fvg(df)
+        ob_analysis = smc_engine.identify_order_blocks(df)
+        liquidity_analysis = smc_engine.identify_liquidity_zones(df)
+        
+        zone_strength = 0
+        reasons = []
+        is_strong_zone = False
+        
+        # تحليل FVG
+        relevant_fvgs = fvg_analysis['bullish_fvg'] if direction == 'buy' else fvg_analysis['bearish_fvg']
+        for fvg in relevant_fvgs:
+            if fvg['low'] <= current_price <= fvg['high']:
+                zone_strength += 2
+                reasons.append(f"داخل {direction} FVG ({fvg['size']:.2f}%)")
+        
+        # تحليل Order Blocks
+        relevant_obs = ob_analysis['bullish_ob'] if direction == 'buy' else ob_analysis['bearish_ob']
+        for ob in relevant_obs:
+            if ob['low'] <= current_price <= ob['high']:
+                zone_strength += 3
+                reasons.append(f"داخل {direction} OB ({ob['strength']:.2f}%)")
+        
+        # تحليل مناطق السيولة
+        relevant_zones = liquidity_analysis['buy_zones'] if direction == 'buy' else liquidity_analysis['sell_zones']
+        for zone in relevant_zones:
+            if abs(current_price - zone) / zone <= 0.02:  # 2% tolerance
+                zone_strength += 2
+                reasons.append(f"قرب منطقة {direction} سيولة")
+        
+        # تحديد إذا كانت المنطقة قوية
+        is_strong_zone = zone_strength >= 4  # حد أدنى لقوة المنطقة
+        
+        return {
+            'is_strong_zone': is_strong_zone,
+            'zone_strength': zone_strength,
+            'reasons': reasons
         }
     
     def manage_open_trade(self, trade, df, current_price):
-        """إدارة الصفقة المفتوحة"""
-        # التعديل: استخدام 'open' بدلاً من 'status'
+        """إدارة الصفقة المفتوحة مع إصلاح الأخطاء"""
+        # التحقق من وجود الصفقة وبياناتها
         if not trade or not trade.get('open', False):
-            return {'action': 'hold'}
+            return {'action': 'hold', 'reason': 'لا توجد صفقة مفتوحة'}
+        
+        # التحقق من وجود entry_time
+        if 'entry_time' not in trade:
+            trade['entry_time'] = time.time()  # تعيين وقت افتراضي
+            log.warning("⚠️ تم تعيين وقت دخول افتراضي للصفقة")
         
         analysis = self.council.analyze_market(df)
         current_pnl = self.calculate_pnl(trade, current_price)
@@ -1111,14 +1072,19 @@ class ProfessionalTradeManager:
     def calculate_pnl(self, trade, current_price):
         """حساب الربح/الخسارة"""
         if trade['side'] == 'long':
-            return (current_price - trade['entry_price']) / trade['entry_price'] * 100
+            return (current_price - trade['entry_price']) / trade['entry_price'] * 100 * LEVERAGE
         else:
-            return (trade['entry_price'] - current_price) / trade['entry_price'] * 100
+            return (trade['entry_price'] - current_price) / trade['entry_price'] * 100 * LEVERAGE
     
     def _make_management_decision(self, trade, analysis, current_pnl, current_price):
         """اتخاذ قرار الإدارة"""
         side = trade['side']
         entry_price = trade['entry_price']
+        
+        # التأكد من وجود entry_time
+        if 'entry_time' not in trade:
+            trade['entry_time'] = time.time()
+        
         time_in_trade = time.time() - trade['entry_time']
         
         # قرارات الجني
@@ -1230,6 +1196,7 @@ class ProfessionalExecutionSystem:
             'side': None,
             'entry_price': None,
             'quantity': 0,
+            'entry_time': None,  # إضافة entry_time بشكل افتراضي
             'opened_at': None,
             'peak_profit': 0,
             'achieved_targets': [],
@@ -1238,7 +1205,7 @@ class ProfessionalExecutionSystem:
         }
     
     def run_trading_cycle(self, df, current_price):
-        """تشغيل دورة التداول"""
+        """تشغيل دورة التداول مع معالجة الأخطاء"""
         try:
             if not self.state['open']:
                 # تقييم فرص الدخول
@@ -1247,8 +1214,8 @@ class ProfessionalExecutionSystem:
                 if entry_decision['action'] in ['buy', 'sell']:
                     self._execute_entry(entry_decision, current_price, df)
                 else:
-                    if LOG_DETAILED_ENTRY:
-                        log.analysis(f"انتظار - ثقة: {entry_decision['confidence']:.1f}% - {', '.join(entry_decision['reasons'][:3])}")
+                    if LOG_DETAILED_ENTRY and random.random() < 0.1:  # تسجيل 10% من الوقت فقط
+                        log.analysis(f"انتظار - ثقة: {entry_decision['confidence']:.1f}% - المنطقة: {'قوية' if entry_decision.get('zone_analysis', {}).get('is_strong_zone') else 'ضعيفة'}")
             
             else:
                 # إدارة الصفقة المفتوحة
@@ -1258,7 +1225,7 @@ class ProfessionalExecutionSystem:
                     self._execute_management(management_decision, current_price)
                 else:
                     current_pnl = self.trade_manager.calculate_pnl(self.state, current_price)
-                    if current_pnl != 0:  # تحديث كل دورة فقط إذا كان هناك تغيير
+                    if abs(current_pnl) > 0.1:  # تحديث فقط إذا كان هناك تغيير ملحوظ
                         log.trade(f"الصفقة مفتوحة - الربح: {current_pnl:.2f}% - الذروة: {self.state.get('peak_profit', 0):.2f}%")
         
         except Exception as e:
@@ -1266,7 +1233,7 @@ class ProfessionalExecutionSystem:
             traceback.print_exc()
     
     def _execute_entry(self, decision, current_price, df):
-        """تنفيذ الدخول"""
+        """تنفيذ الدخول مع التسجيل المحسن"""
         side = decision['action']
         confidence = decision['confidence']
         
@@ -1277,6 +1244,16 @@ class ProfessionalExecutionSystem:
             log.error("❌ كمية غير صالحة للدخول")
             return
         
+        # تسجيل تفاصيل التصويت
+        self._log_voting_details(decision['analysis'])
+        
+        # تسجيل تحليل المنطقة
+        zone_analysis = decision.get('zone_analysis', {})
+        if zone_analysis.get('is_strong_zone'):
+            log.success(f"📍 منطقة دخول قوية - القوة: {zone_analysis.get('zone_strength', 0)}")
+            for reason in zone_analysis.get('reasons', [])[:3]:
+                log.indicator(f"   📍 {reason}")
+        
         # تنفيذ الصفقة
         if EXECUTE_ORDERS and not DRY_RUN:
             success = self._place_order(side, quantity, current_price)
@@ -1285,12 +1262,14 @@ class ProfessionalExecutionSystem:
             log.trade(f"DRY_RUN: دخول {side} {quantity:.4f} @ {current_price:.6f}")
         
         if success:
+            current_time = time.time()
             self.state.update({
                 'open': True,
                 'side': side,
                 'entry_price': current_price,
                 'quantity': quantity,
-                'opened_at': time.time(),
+                'entry_time': current_time,  # تعيين entry_time
+                'opened_at': current_time,
                 'entry_confidence': confidence,
                 'peak_profit': 0,
                 'achieved_targets': [],
@@ -1301,14 +1280,31 @@ class ProfessionalExecutionSystem:
             
             # تسجيل مفصل
             log.success(f"🎯 فتح صفقة {side.upper()} - الكمية: {quantity:.4f} - السعر: {current_price:.6f}")
-            log.strategy(f"📊 الثقة: {confidence:.1f}%")
+            log.strategy(f"📊 الثقة: {confidence:.1f}% - المنطقة: {'قوية' if zone_analysis.get('is_strong_zone') else 'ضعيفة'}")
             
             for i, reason in enumerate(decision['reasons'][:5]):  # أول 5 أسباب فقط
                 log.indicator(f"   {i+1}. {reason}")
-            
-            if LOG_DETAILED_ENTRY:
-                self._log_detailed_analysis(decision['analysis'])
     
+    def _log_voting_details(self, analysis):
+        """تسجيل تفاصيل التصويت"""
+        if not LOG_DETAILED_ENTRY:
+            return
+        
+        details = analysis.get('details', {})
+        vote_counts = analysis.get('vote_counts', {})
+        
+        log_banner("نتائج تصويت المجلس")
+        log.analysis(f"📊 القرار: {analysis.get('decision', 'wait')} - الثقة: {analysis.get('confidence', 0):.1f}%")
+        log.analysis(f"🗳️ الأصوات: شراء {vote_counts.get('buy', 0)} | بيع {vote_counts.get('sell', 0)} | انتظار {vote_counts.get('wait', 0)}")
+        
+        for member, vote_data in details.items():
+            vote = vote_data.get('vote', 'wait')
+            confidence = vote_data.get('confidence', 0)
+            reason = vote_data.get('reason', '')
+            
+            symbol = "✅" if vote == 'buy' else "❌" if vote == 'sell' else "⏸️"
+            log.analysis(f"   {symbol} {member}: {vote} ({confidence:.1f}%) - {reason}")
+
     def _execute_management(self, decision, current_price):
         """تنفيذ قرارات الإدارة"""
         action = decision['action']
@@ -1459,35 +1455,13 @@ class ProfessionalExecutionSystem:
             'side': None,
             'entry_price': None,
             'quantity': 0,
+            'entry_time': None,  # إعادة تعيين entry_time
             'opened_at': None,
             'peak_profit': 0,
             'achieved_targets': [],
             'breakeven_activated': False,
             'trailing_activated': False
         })
-    
-    def _log_detailed_analysis(self, analysis):
-        """تسجيل التحليل المفصل"""
-        if not LOG_DETAILED_ENTRY:
-            return
-        
-        log_banner("التفاصيل الفنية للدخول")
-        
-        # تحليل SMC
-        smc = analysis['details']['smc']
-        log.analysis(f"📊 تحليل SMC - صاعد: {smc['score_bullish']} | هابط: {smc['score_bearish']}")
-        
-        # تحليل تقني
-        tech = analysis['details']['technical']
-        log.analysis(f"📈 تحليل تقني - صاعد: {tech['score_bullish']} | هابط: {tech['score_bearish']}")
-        
-        # تحليل الشموع
-        candles = analysis['details']['candles']
-        log.analysis(f"🕯️ أنماط الشموع - {candles['pattern']} - قوة: {candles['strength']}")
-        
-        # تحليل الزخم
-        momentum = analysis['details']['momentum']
-        log.analysis(f"🚀 تحليل الزخم - صاعد: {momentum['score_bullish']} | هابط: {momentum['score_bearish']}")
 
 # =================== MAIN EXECUTION SYSTEM ===================
 def main_loop_enhanced():
@@ -1504,6 +1478,7 @@ def main_loop_enhanced():
     log.info(f"🎯 الرمز: {SYMBOL} | الإطار: {INTERVAL}")
     log.info(f"💰 الرافعة: {LEVERAGE}x | المخاطرة: {RISK_ALLOC}%")
     log.info(f"🔧 الوضع: {'LIVE' if MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}")
+    log.info(f"🏛️ نظام المجلس: {COUNCIL_MEMBERS} أعضاء | الحد الأدنى: {MIN_VOTES_FOR_ENTRY} أصوات")
     
     last_log_time = 0
     
@@ -1578,7 +1553,7 @@ def log_market_status(df, current_price, state):
         status_msg = f"📈 السوق: {trend} | RSI: {rsi:.1f} ({rsi_status}) | السعر: {current_price:.6f}"
         
         if state['open']:
-            pnl = (current_price - state['entry_price']) / state['entry_price'] * 100
+            pnl = (current_price - state['entry_price']) / state['entry_price'] * 100 * LEVERAGE
             if state['side'] == 'short':
                 pnl = -pnl
             status_msg += f" | الصفقة: {state['side']} | الربح: {pnl:.2f}%"
@@ -1617,6 +1592,10 @@ def verify_environment():
     log.info(f"   - الرافعة: {LEVERAGE}x")
     log.info(f"   - المخاطرة: {RISK_ALLOC}%")
     log.info(f"   - التنفيذ: {'نشط' if EXECUTE_ORDERS and not DRY_RUN else 'محاكاة'}")
+    log.info(f"🏛️ إعدادات المجلس:")
+    log.info(f"   - الأعضاء: {COUNCIL_MEMBERS}")
+    log.info(f"   - الأصوات المطلوبة: {MIN_VOTES_FOR_ENTRY}")
+    log.info(f"   - الثقة الدنيا: {MIN_CONFIDENCE}%")
 
 # =================== HELPER FUNCTIONS ===================
 def safe_qty(qty):
@@ -1674,7 +1653,10 @@ def status():
         "bot_version": BOT_VERSION,
         "symbol": SYMBOL,
         "interval": INTERVAL,
-        "mode": "LIVE" if MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN else "SIMULATION"
+        "mode": "LIVE" if MODE_LIVE and EXECUTE_ORDERS and not DRY_RUN else "SIMULATION",
+        "council_members": COUNCIL_MEMBERS,
+        "min_votes": MIN_VOTES_FOR_ENTRY,
+        "min_confidence": MIN_CONFIDENCE
     })
 
 # =================== MAIN EXECUTION ===================
