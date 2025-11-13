@@ -1092,7 +1092,7 @@ class ProfessionalTradeManager:
     
     def manage_open_trade(self, trade, df, current_price):
         """إدارة الصفقة المفتوحة"""
-        # التعديل النهائي: استخدام 'open' بدلاً من 'status'
+        # التعديل: استخدام 'open' بدلاً من 'status'
         if not trade or not trade.get('open', False):
             return {'action': 'hold'}
         
@@ -1145,7 +1145,7 @@ class ProfessionalTradeManager:
         
         achieved_targets = trade.get('achieved_targets', [])
         
-        for i, (level, ratio) in enumerate(zip(tp_levels, tp_ratios):
+        for i, (level, ratio) in enumerate(zip(tp_levels, tp_ratios)):
             if level not in achieved_targets and current_pnl >= level:
                 return {
                     'action': 'partial_close',
