@@ -17,13 +17,107 @@ import numpy as np
 import ccxt
 from flask import Flask, jsonify
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
-import talib
 from scipy import stats
 
 try:
     from termcolor import colored
 except Exception:
     def colored(t,*a,**k): return t
+
+# =================== CUSTOM TECHNICAL INDICATORS ===================
+class TechnicalIndicators:
+    """مكتبة مؤشرات فنية بديلة بدون TA-Lib"""
+    
+    @staticmethod
+    def sma(data, period):
+        """المتوسط المتحرك البسيط"""
+        return data.rolling(window=period).mean()
+    
+    @staticmethod
+    def ema(data, period):
+        """المتوسط المتحرك الأسي"""
+        return data.ewm(span=period, adjust=False).mean()
+    
+    @staticmethod
+    def rsi(data, period=14):
+        """مؤشر القوة النسبية"""
+        delta = data.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    @staticmethod
+    def macd(data, fast=12, slow=26, signal=9):
+        """مؤشر MACD"""
+        ema_fast = data.ewm(span=fast, adjust=False).mean()
+        ema_slow = data.ewm(span=slow, adjust=False).mean()
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        histogram = macd_line - signal_line
+        return macd_line, signal_line, histogram
+    
+    @staticmethod
+    def bollinger_bands(data, period=20, std_dev=2):
+        """نطاقات بولينجر"""
+        sma = data.rolling(window=period).mean()
+        std = data.rolling(window=period).std()
+        upper_band = sma + (std * std_dev)
+        lower_band = sma - (std * std_dev)
+        return upper_band, sma, lower_band
+    
+    @staticmethod
+    def atr(high, low, close, period=14):
+        """متوسط المدى الحقيقي"""
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(period).mean()
+        return atr
+    
+    @staticmethod
+    def stoch(high, low, close, k_period=14, d_period=3):
+        """مؤشر ستوكاستك"""
+        lowest_low = low.rolling(window=k_period).min()
+        highest_high = high.rolling(window=k_period).max()
+        k = 100 * ((close - lowest_low) / (highest_high - lowest_low))
+        d = k.rolling(window=d_period).mean()
+        return k, d
+    
+    @staticmethod
+    def obv(close, volume):
+        """حجم الرصيد"""
+        obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
+        return obv
+    
+    @staticmethod
+    def adx(high, low, close, period=14):
+        """مؤشر ADX"""
+        up_move = high.diff()
+        down_move = low.diff().abs()
+        
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+        
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        atr = tr.rolling(period).mean()
+        
+        plus_di = 100 * (pd.Series(plus_dm, index=high.index).rolling(period).mean() / atr)
+        minus_di = 100 * (pd.Series(minus_dm, index=high.index).rolling(period).mean() / atr)
+        
+        dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
+        adx = dx.rolling(period).mean()
+        
+        return adx, plus_di, minus_di
+
+# إنشاء كائن المؤشرات الفنية
+ti = TechnicalIndicators()
 
 # =================== ENV / MODE ===================
 EXCHANGE_NAME = os.getenv("EXCHANGE", "bingx").lower()
@@ -938,7 +1032,7 @@ def compute_flow_metrics(df):
 
 # =================== ADVANCED INDICATORS ===================
 def compute_advanced_indicators(df):
-    """حساب المؤشرات المتقدمة"""
+    """حساب المؤشرات المتقدمة باستخدام مكتبة بديلة"""
     try:
         close = df['close'].astype(float)
         high = df['high'].astype(float)
@@ -946,35 +1040,33 @@ def compute_advanced_indicators(df):
         volume = df['volume'].astype(float)
         
         # مؤشرات الترند
-        sma_20 = talib.SMA(close, timeperiod=20)
-        sma_50 = talib.SMA(close, timeperiod=50)
-        ema_20 = talib.EMA(close, timeperiod=20)
+        sma_20 = ti.sma(close, 20)
+        sma_50 = ti.sma(close, 50)
+        ema_20 = ti.ema(close, 20)
         
         # مؤشرات الزخم
-        rsi = talib.RSI(close, timeperiod=14)
-        macd, macd_signal, macd_hist = talib.MACD(close)
-        stoch_k, stoch_d = talib.STOCH(high, low, close)
+        rsi = ti.rsi(close, 14)
+        macd_line, macd_signal_line, macd_hist_line = ti.macd(close)
+        stoch_k, stoch_d = ti.stoch(high, low, close)
         
         # مؤشرات التقلب
-        atr = talib.ATR(high, low, close, timeperiod=14)
-        bollinger_upper, bollinger_middle, bollinger_lower = talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)
+        atr = ti.atr(high, low, close, 14)
+        bollinger_upper, bollinger_middle, bollinger_lower = ti.bollinger_bands(close)
         
         # مؤشرات الحجم
-        obv = talib.OBV(close, volume)
+        obv = ti.obv(close, volume)
         
         # مؤشرات الاتجاه
-        adx = talib.ADX(high, low, close, timeperiod=14)
-        plus_di = talib.PLUS_DI(high, low, close, timeperiod=14)
-        minus_di = talib.MINUS_DI(high, low, close, timeperiod=14)
+        adx, plus_di, minus_di = ti.adx(high, low, close, 14)
         
         return {
             'sma_20': last_scalar(sma_20),
             'sma_50': last_scalar(sma_50),
             'ema_20': last_scalar(ema_20),
             'rsi': last_scalar(rsi),
-            'macd': last_scalar(macd),
-            'macd_signal': last_scalar(macd_signal),
-            'macd_hist': last_scalar(macd_hist),
+            'macd': last_scalar(macd_line),
+            'macd_signal': last_scalar(macd_signal_line),
+            'macd_hist': last_scalar(macd_hist_line),
             'stoch_k': last_scalar(stoch_k),
             'stoch_d': last_scalar(stoch_d),
             'atr': last_scalar(atr),
@@ -999,17 +1091,15 @@ def compute_indicators(df):
         low = df['low'].astype(float)
         
         # RSI
-        rsi = talib.RSI(close, timeperiod=RSI_LEN)
-        rsi_ma = talib.SMA(rsi, timeperiod=RSI_MA_LEN)
+        rsi = ti.rsi(close, RSI_LEN)
+        rsi_ma = ti.sma(rsi, RSI_MA_LEN)
         
         # ADX
-        adx = talib.ADX(high, low, close, timeperiod=ADX_LEN)
-        plus_di = talib.PLUS_DI(high, low, close, timeperiod=ADX_LEN)
-        minus_di = talib.MINUS_DI(high, low, close, timeperiod=ADX_LEN)
+        adx, plus_di, minus_di = ti.adx(high, low, close, ADX_LEN)
         di_spread = abs(plus_di - minus_di)
         
         # ATR
-        atr = talib.ATR(high, low, close, timeperiod=ATR_LEN)
+        atr = ti.atr(high, low, close, ATR_LEN)
         
         return {
             'rsi': last_scalar(rsi),
