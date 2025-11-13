@@ -58,6 +58,23 @@ def safe_qty(qty):
         return float(qty)
     return float(math.floor(float(qty) / step) * step)
 
+def ensure_dataframe_compatibility(data):
+    """تأكد من توافق البيانات مع pandas DataFrame"""
+    if isinstance(data, pd.DataFrame):
+        return data
+    elif isinstance(data, np.ndarray):
+        # تحويل numpy array إلى DataFrame
+        if data.ndim == 1:
+            return pd.DataFrame(data)
+        else:
+            return pd.DataFrame(data, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
+    else:
+        # افتراض أنها قائمة أو أي نوع بيانات آخر
+        try:
+            return pd.DataFrame(data)
+        except:
+            return None
+
 # =================== ENV / MODE ===================
 # Exchange Selection
 EXCHANGE_NAME = os.getenv("EXCHANGE", "bingx").lower()
@@ -460,87 +477,126 @@ def verify_execution_environment():
 
 # =================== ENHANCED INDICATORS ===================
 def sma(series, n: int):
-    return series.rolling(n, min_periods=1).mean()
+    """المتوسط المتحرك البسيط"""
+    if hasattr(series, 'rolling'):
+        return series.rolling(n, min_periods=1).mean()
+    else:
+        # إذا كان series عبارة عن numpy array
+        return pd.Series(series).rolling(n, min_periods=1).mean()
 
 def compute_rsi(close, n: int = 14):
+    """حساب مؤشر RSI مع معالجة numpy arrays"""
+    if not hasattr(close, 'diff'):
+        close = pd.Series(close)
+    
     delta = close.diff()
     up = delta.clip(lower=0)
     down = (-delta).clip(lower=0)
-    roll_up = up.ewm(span=n, adjust=False).mean()
-    roll_down = down.ewm(span=n, adjust=False).mean()
+    
+    # استخدام min_periods=1 لتجنب القيم NaN
+    roll_up = up.ewm(span=n, min_periods=1, adjust=False).mean()
+    roll_down = down.ewm(span=n, min_periods=1, adjust=False).mean()
+    
     rs = roll_up / roll_down.replace(0, 1e-12)
     rsi = 100 - (100/(1+rs))
     return rsi.fillna(50)
 
-def rsi_ma_context(df):
-    if len(df) < max(RSI_MA_LEN, 14):
-        return {"rsi": 50, "rsi_ma": 50, "cross": "none", "trendZ": "none", "in_chop": True}
-    
-    rsi = compute_rsi(df['close'].astype(float), 14)
-    rsi_ma = sma(rsi, RSI_MA_LEN)
-    
-    cross = "none"
-    if len(rsi) >= 2:
-        if (safe_iloc(rsi, -2) <= safe_iloc(rsi_ma, -2)) and (safe_iloc(rsi) > safe_iloc(rsi_ma)):
-            cross = "bull"
-        elif (safe_iloc(rsi, -2) >= safe_iloc(rsi_ma, -2)) and (safe_iloc(rsi) < safe_iloc(rsi_ma)):
-            cross = "bear"
-    
-    above = (rsi > rsi_ma)
-    below = (rsi < rsi_ma)
-    persist_bull = above.tail(RSI_TREND_PERSIST).all() if len(above) >= RSI_TREND_PERSIST else False
-    persist_bear = below.tail(RSI_TREND_PERSIST).all() if len(below) >= RSI_TREND_PERSIST else False
-    
-    current_rsi = safe_iloc(rsi)
-    in_chop = RSI_NEUTRAL_BAND[0] <= current_rsi <= RSI_NEUTRAL_BAND[1]
-    
-    return {
-        "rsi": current_rsi,
-        "rsi_ma": safe_iloc(rsi_ma),
-        "cross": cross,
-        "trendZ": "bull" if persist_bull else ("bear" if persist_bear else "none"),
-        "in_chop": in_chop
-    }
-
 def compute_indicators(df):
-    """حساب المؤشرات الأساسية"""
+    """حساب المؤشرات الأساسية مع إصلاح مشكلة numpy arrays"""
     if len(df) < max(RF_PERIOD, ATR_LEN, ADX_LEN) + 5:
         return {}
     
     try:
-        close = df['close'].astype(float)
-        high = df['high'].astype(float)
-        low = df['low'].astype(float)
+        # تحويل إلى pandas Series إذا كانت numpy arrays
+        if not hasattr(df['close'], 'iloc'):
+            close = pd.Series(df['close'])
+            high = pd.Series(df['high'])
+            low = pd.Series(df['low'])
+        else:
+            close = df['close'].astype(float)
+            high = df['high'].astype(float)
+            low = df['low'].astype(float)
         
-        # ATR
-        tr = np.maximum(high - low, 
-                       np.maximum(abs(high - close.shift(1)), 
-                                 abs(low - close.shift(1))))
-        atr = tr.rolling(ATR_LEN).mean()
+        # ATR محسّن
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(ATR_LEN, min_periods=1).mean()
         
-        # ADX
-        up = high.diff()
-        down = -low.diff()
-        plus_dm = np.where((up > down) & (up > 0), up, 0.0)
-        minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+        # ADX محسّن
+        up_move = high.diff()
+        down_move = -low.diff()
         
-        tr = high.combine(low, max) - high.combine(low, min)
-        atr = tr.rolling(ADX_LEN).mean()
+        plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0)
+        minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0)
         
-        plus_di = 100 * (plus_dm.rolling(ADX_LEN).mean() / atr)
-        minus_di = 100 * (minus_dm.rolling(ADX_LEN).mean() / atr)
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-        adx = dx.rolling(ADX_LEN).mean()
+        # استخدام ATR السلس
+        atr_smooth = atr.rolling(ADX_LEN, min_periods=1).mean()
+        
+        plus_di = 100 * (plus_dm.rolling(ADX_LEN, min_periods=1).mean() / atr_smooth.replace(0, 1))
+        minus_di = 100 * (minus_dm.rolling(ADX_LEN, min_periods=1).mean() / atr_smooth.replace(0, 1))
+        
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, 1e-12)
+        adx = dx.rolling(ADX_LEN, min_periods=1).mean()
         
         return {
-            'atr': last_val(atr),
-            'adx': last_val(adx),
-            'plus_di': last_val(plus_di),
-            'minus_di': last_val(minus_di)
+            'atr': float(last_val(atr)),
+            'adx': float(last_val(adx)),
+            'plus_di': float(last_val(plus_di)),
+            'minus_di': float(last_val(minus_di))
         }
     except Exception as e:
         log_w(f"compute_indicators error: {e}")
         return {}
+
+def rsi_ma_context(df):
+    """سياق RSI مع معالجة numpy arrays"""
+    if len(df) < max(RSI_MA_LEN, 14):
+        return {"rsi": 50, "rsi_ma": 50, "cross": "none", "trendZ": "none", "in_chop": True}
+    
+    # تحويل إلى pandas Series إذا لزم الأمر
+    if not hasattr(df['close'], 'iloc'):
+        close_series = pd.Series(df['close'])
+    else:
+        close_series = df['close'].astype(float)
+    
+    rsi = compute_rsi(close_series, 14)
+    rsi_ma = sma(rsi, RSI_MA_LEN)
+    
+    cross = "none"
+    if len(rsi) >= 2:
+        rsi_prev = float(rsi.iloc[-2]) if hasattr(rsi, 'iloc') else float(rsi[-2])
+        rsi_curr = float(rsi.iloc[-1]) if hasattr(rsi, 'iloc') else float(rsi[-1])
+        rsi_ma_prev = float(rsi_ma.iloc[-2]) if hasattr(rsi_ma, 'iloc') else float(rsi_ma[-2])
+        rsi_ma_curr = float(rsi_ma.iloc[-1]) if hasattr(rsi_ma, 'iloc') else float(rsi_ma[-1])
+        
+        if (rsi_prev <= rsi_ma_prev) and (rsi_curr > rsi_ma_curr):
+            cross = "bull"
+        elif (rsi_prev >= rsi_ma_prev) and (rsi_curr < rsi_ma_curr):
+            cross = "bear"
+    
+    # تحليل الاتجاه
+    if hasattr(rsi, 'tail'):
+        above = (rsi > rsi_ma).tail(RSI_TREND_PERSIST)
+        below = (rsi < rsi_ma).tail(RSI_TREND_PERSIST)
+        persist_bull = above.all() if len(above) >= RSI_TREND_PERSIST else False
+        persist_bear = below.all() if len(below) >= RSI_TREND_PERSIST else False
+    else:
+        # Fallback for numpy arrays
+        persist_bull = all(rsi[-RSI_TREND_PERSIST:] > rsi_ma[-RSI_TREND_PERSIST:])
+        persist_bear = all(rsi[-RSI_TREND_PERSIST:] < rsi_ma[-RSI_TREND_PERSIST:])
+    
+    current_rsi = float(rsi.iloc[-1]) if hasattr(rsi, 'iloc') else float(rsi[-1])
+    in_chop = RSI_NEUTRAL_BAND[0] <= current_rsi <= RSI_NEUTRAL_BAND[1]
+    
+    return {
+        "rsi": current_rsi,
+        "rsi_ma": float(rsi_ma.iloc[-1]) if hasattr(rsi_ma, 'iloc') else float(rsi_ma[-1]),
+        "cross": cross,
+        "trendZ": "bull" if persist_bull else ("bear" if persist_bear else "none"),
+        "in_chop": in_chop
+    }
 
 # =================== SMART MONEY CONCEPTS (SMC) ===================
 def detect_liquidity_zones(df, window=20):
@@ -2756,7 +2812,7 @@ wait_for_next_signal_side = None
 FAST_TRADE_ENABLED = True
 
 def main_loop():
-    """الحلقة الرئيسية للتداول"""
+    """الحلقة الرئيسية للتداول مع إصلاحات التوافق"""
     global STATE, compound_pnl
     
     # التحقق من بيئة التنفيذ
@@ -2778,6 +2834,13 @@ def main_loop():
             df = fetch_ohlcv()
             if df is None or len(df) < 100:
                 log_w("بيانات غير كافية، إعادة المحاولة...")
+                time.sleep(BASE_SLEEP)
+                continue
+            
+            # تأكد من توافق البيانات
+            df = ensure_dataframe_compatibility(df)
+            if df is None:
+                log_w("مشكلة في تنسيق البيانات، إعادة المحاولة...")
                 time.sleep(BASE_SLEEP)
                 continue
             
@@ -2828,13 +2891,20 @@ def main_loop():
             time.sleep(BASE_SLEEP * 2)
 
 def fetch_ohlcv():
-    """جلب بيانات OHLCV"""
+    """جلب بيانات OHLCV مع معالجة محسنة"""
     try:
         since = ex.milliseconds() - 1000 * 60 * 60 * 24 * 3  # 3 أيام
         ohlcv = ex.fetch_ohlcv(SYMBOL, INTERVAL, since=since, limit=500)
         
         df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
         df['time'] = pd.to_datetime(df['time'], unit='ms')
+        
+        # تحويل الأعمدة إلى float بشكل صريح
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # إزالة أي صفوف تحتوي على قيم NaN
+        df = df.dropna()
         
         return df
     except Exception as e:
