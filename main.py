@@ -1533,7 +1533,8 @@ def main_loop_enhanced():
         except Exception as e:
             log.error(f"🔥 خطأ غير متوقع: {e}")
             traceback.print_exc()
-            time.sleep(BASE_SLEEP * 2)
+            time.sleep(LOOP_SLEEP_SEC * 2)
+
 
 def fetch_ohlcv_enhanced():
     """جلب بيانات OHLCV محسن"""
