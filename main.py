@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-SUI ULTRA PRO AI BOT - الإصدار الذكي المحترف المتكامل
+SUI ULTRA PRO AI BOT - الإصدار الذكي المحترف المتكامل مع مؤشرات TradingView/Bybit
 • مجلس الإدارة الفائق الذكي مع SMC + عرض/طلب + تحليل محترف
 • نظام ركوب الترند الذكي المحترف لتحقيق أقصى ربح متتالي
 • كشف التلاعب والتذبذب والكسر الحقيقي/الوهمي
 • إدارة صفقات ذكية متكيفة مع قوة الترند
 • نظام Footprint + Diagonal Order-Flow المتقدم
 • Multi-Exchange Support: BingX & Bybit
+• TradingView/Bybit Precision Indicators
 """
 
 import os, time, math, random, signal, sys, traceback, logging, json
@@ -24,53 +25,99 @@ try:
 except Exception:
     def colored(t,*a,**k): return t
 
-# =================== CUSTOM TECHNICAL INDICATORS ===================
-class TechnicalIndicators:
-    """مكتبة مؤشرات فنية بديلة بدون TA-Lib - محسنة لمطابقة Bybit"""
+# =================== TRADINGVIEW-STYLE TECHNICAL INDICATORS ===================
+class TradingViewIndicators:
+    """مكتبة مؤشرات بنمط TradingView/Bybit الدقيق"""
     
     @staticmethod
-    def sma(data, period):
-        """المتوسط المتحرك البسيط"""
-        return data.rolling(window=period).mean()
+    def tv_rma(series: pd.Series, length: int) -> pd.Series:
+        """Running Moving Average (كما في TradingView)"""
+        series = series.astype(float)
+        alpha = 1.0 / length
+        rma = series.ewm(alpha=alpha, adjust=False).mean()
+        return rma
     
     @staticmethod
-    def ema(data, period):
-        """المتوسط المتحرك الأسي"""
+    def tv_rsi(close: pd.Series, length: int = 14) -> pd.Series:
+        """مؤشر RSI بنمط TradingView الدقيق"""
+        close = close.astype(float)
+        diff = close.diff()
+        gain = diff.where(diff > 0, 0.0)
+        loss = -diff.where(diff < 0, 0.0)
+        avg_gain = TradingViewIndicators.tv_rma(gain, length)
+        avg_loss = TradingViewIndicators.tv_rma(loss, length)
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    @staticmethod
+    def tv_atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series:
+        """مؤشر ATR بنمط TradingView الدقيق"""
+        high = high.astype(float)
+        low = low.astype(float)
+        close = close.astype(float)
+        prev_close = close.shift(1)
+        tr1 = high - low
+        tr2 = (high - prev_close).abs()
+        tr3 = (low - prev_close).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = TradingViewIndicators.tv_rma(tr, length)
+        return atr
+    
+    @staticmethod
+    def tv_adx(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14):
+        """مؤشر ADX بنمط TradingView الدقيق"""
+        high = high.astype(float)
+        low = low.astype(float)
+        close = close.astype(float)
+
+        up_move = high.diff()
+        down_move = -low.diff()
+
+        plus_dm = np.where(
+            (up_move > down_move) & (up_move > 0), up_move, 0.0
+        )
+        minus_dm = np.where(
+            (down_move > up_move) & (down_move > 0), down_move, 0.0
+        )
+
+        tr = TradingViewIndicators.tv_atr(high, low, close, length) * length
+        tr_rma = TradingViewIndicators.tv_rma(tr, length)
+        plus_dm_rma = TradingViewIndicators.tv_rma(pd.Series(plus_dm, index=high.index), length)
+        minus_dm_rma = TradingViewIndicators.tv_rma(pd.Series(minus_dm, index=high.index), length)
+
+        plus_di = 100 * (plus_dm_rma / tr_rma.replace(0, np.nan))
+        minus_di = 100 * (minus_dm_rma / tr_rma.replace(0, np.nan))
+
+        dx = ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)) * 100
+        adx = TradingViewIndicators.tv_rma(dx, length)
+
+        return adx, plus_di, minus_di
+    
+    @staticmethod
+    def tv_macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+        """مؤشر MACD بنمط TradingView الدقيق"""
+        close = close.astype(float)
+        ema_fast = close.ewm(span=fast, adjust=False).mean()
+        ema_slow = close.ewm(span=slow, adjust=False).mean()
+        macd = ema_fast - ema_slow
+        macd_signal = macd.ewm(span=signal, adjust=False).mean()
+        macd_hist = macd - macd_signal
+        return macd, macd_signal, macd_hist
+    
+    @staticmethod
+    def tv_ema(data: pd.Series, period: int):
+        """المتوسط المتحرك الأسي بنمط TradingView"""
         return data.ewm(span=period, adjust=False).mean()
     
     @staticmethod
-    def rsi(data, period=14):
-        """مؤشر القوة النسبية - محسن لمطابقة Bybit"""
-        try:
-            delta = data.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            
-            # تسجيل تفاصيل RSI للتحقق
-            if len(data) > period:
-                current_rsi = rsi.iloc[-1]
-                logging.info(f"🔍 RSI CALCULATION: Period={period}, Current={current_rsi:.2f}")
-            
-            return rsi
-        except Exception as e:
-            logging.error(f"RSI calculation error: {e}")
-            return pd.Series([50] * len(data), index=data.index)
+    def tv_sma(data: pd.Series, period: int):
+        """المتوسط المتحرك البسيط بنمط TradingView"""
+        return data.rolling(window=period).mean()
     
     @staticmethod
-    def macd(data, fast=12, slow=26, signal=9):
-        """مؤشر MACD"""
-        ema_fast = data.ewm(span=fast, adjust=False).mean()
-        ema_slow = data.ewm(span=slow, adjust=False).mean()
-        macd_line = ema_fast - ema_slow
-        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-        histogram = macd_line - signal_line
-        return macd_line, signal_line, histogram
-    
-    @staticmethod
-    def bollinger_bands(data, period=20, std_dev=2):
-        """نطاقات بولينجر"""
+    def tv_bollinger_bands(data, period=20, std_dev=2):
+        """نطاقات بولينجر بنمط TradingView"""
         sma = data.rolling(window=period).mean()
         std = data.rolling(window=period).std()
         upper_band = sma + (std * std_dev)
@@ -78,18 +125,8 @@ class TechnicalIndicators:
         return upper_band, sma, lower_band
     
     @staticmethod
-    def atr(high, low, close, period=14):
-        """متوسط المدى الحقيقي"""
-        tr1 = high - low
-        tr2 = abs(high - close.shift())
-        tr3 = abs(low - close.shift())
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.rolling(period).mean()
-        return atr
-    
-    @staticmethod
-    def stoch(high, low, close, k_period=14, d_period=3):
-        """مؤشر ستوكاستك"""
+    def tv_stoch(high, low, close, k_period=14, d_period=3):
+        """مؤشر ستوكاستك بنمط TradingView"""
         lowest_low = low.rolling(window=k_period).min()
         highest_high = high.rolling(window=k_period).max()
         k = 100 * ((close - lowest_low) / (highest_high - lowest_low))
@@ -97,52 +134,13 @@ class TechnicalIndicators:
         return k, d
     
     @staticmethod
-    def obv(close, volume):
-        """حجم الرصيد"""
+    def tv_obv(close, volume):
+        """حجم الرصيد بنمط TradingView"""
         obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
         return obv
-    
-    @staticmethod
-    def adx(high, low, close, period=14):
-        """مؤشر ADX - محسن لمطابقة Bybit"""
-        try:
-            # حساب +DM و -DM
-            up_move = high.diff()
-            down_move = low.diff().abs()
-            
-            plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
-            minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
-            
-            # المدى الحقيقي (True Range)
-            tr1 = high - low
-            tr2 = abs(high - close.shift())
-            tr3 = abs(low - close.shift())
-            true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            
-            # المتوسطات المتحركة باستخدام طريقة Wilder
-            atr = true_range.rolling(period).mean()
-            plus_di = 100 * (pd.Series(plus_dm, index=high.index).rolling(period).mean() / atr)
-            minus_di = 100 * (pd.Series(minus_dm, index=high.index).rolling(period).mean() / atr)
-            
-            # حساب DX و ADX
-            dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
-            adx = dx.rolling(period).mean()
-            
-            # تسجيل تفاصيل ADX للتحقق
-            if len(high) > period:
-                current_adx = adx.iloc[-1] if not pd.isna(adx.iloc[-1]) else 0
-                current_plus_di = plus_di.iloc[-1] if not pd.isna(plus_di.iloc[-1]) else 0
-                current_minus_di = minus_di.iloc[-1] if not pd.isna(minus_di.iloc[-1]) else 0
-                logging.info(f"🔍 ADX CALCULATION: Period={period}, ADX={current_adx:.2f}, +DI={current_plus_di:.2f}, -DI={current_minus_di:.2f}")
-            
-            return adx, plus_di, minus_di
-        except Exception as e:
-            logging.error(f"ADX calculation error: {e}")
-            empty_series = pd.Series([0] * len(high), index=high.index)
-            return empty_series, empty_series, empty_series
 
-# إنشاء كائن المؤشرات الفنية
-ti = TechnicalIndicators()
+# إنشاء كائن المؤشرات بنمط TradingView
+tv = TradingViewIndicators()
 
 # =================== ENV / MODE ===================
 EXCHANGE_NAME = os.getenv("EXCHANGE", "bingx").lower()
@@ -168,7 +166,7 @@ SHADOW_MODE_DASHBOARD = False
 DRY_RUN = False
 
 # ==== Addon: Logging + Recovery Settings ====
-BOT_VERSION = f"SUI ULTRA PRO AI v10.0 — {EXCHANGE_NAME.upper()} - ULTIMATE PROFESSIONAL"
+BOT_VERSION = f"SUI ULTRA PRO AI v10.0 — {EXCHANGE_NAME.upper()} - TRADINGVIEW PRECISION"
 print("🚀 Booting:", BOT_VERSION, flush=True)
 
 STATE_PATH = "./bot_state.json"
@@ -198,7 +196,7 @@ RF_MULT   = float(os.getenv("RF_MULT", 3.0))
 RF_LIVE_ONLY = True
 RF_HYST_BPS  = 6.0
 
-# Indicators - Updated for 15m timeframe
+# Indicators
 RSI_LEN = 14
 ADX_LEN = 14
 ATR_LEN = 14
@@ -1055,118 +1053,89 @@ def compute_flow_metrics(df):
     except Exception as e:
         return {"ok": False, "why": str(e)}
 
-# =================== ADVANCED INDICATORS ===================
-def compute_advanced_indicators(df):
-    """حساب المؤشرات المتقدمة باستخدام مكتبة بديلة - مطابقة لـ Bybit على 15m"""
-    try:
-        close = df['close'].astype(float)
-        high = df['high'].astype(float)
-        low = df['low'].astype(float)
-        volume = df['volume'].astype(float)
-        
-        # مؤشرات الترند - مطابقة لـ Bybit
-        sma_20 = ti.sma(close, 20)
-        sma_50 = ti.sma(close, 50)
-        ema_20 = ti.ema(close, 20)
-        
-        # RSI - مطابق لـ Bybit (14 فترة)
-        rsi = ti.rsi(close, 14)
-        
-        # MACD - مطابق لـ Bybit (12,26,9)
-        macd_line, macd_signal_line, macd_hist_line = ti.macd(close, 12, 26, 9)
-        
-        # ستوكاستك - مطابق لـ Bybit (14,3,3)
-        stoch_k, stoch_d = ti.stoch(high, low, close, 14, 3)
-        
-        # ATR - مطابق لـ Bybit (14 فترة)
-        atr = ti.atr(high, low, close, 14)
-        
-        # بولينجر باند - مطابق لـ Bybit (20,2)
-        bollinger_upper, bollinger_middle, bollinger_lower = ti.bollinger_bands(close, 20, 2)
-        
-        # OBV - حجم الرصيد
-        obv = ti.obv(close, volume)
-        
-        # ADX - مطابق لـ Bybit (14 فترة)
-        adx, plus_di, minus_di = ti.adx(high, low, close, 14)
-        
-        # جلب القيم الحالية فقط
-        result = {
-            'sma_20': last_scalar(sma_20),
-            'sma_50': last_scalar(sma_50),
-            'ema_20': last_scalar(ema_20),
-            'rsi': last_scalar(rsi),
-            'macd': last_scalar(macd_line),
-            'macd_signal': last_scalar(macd_signal_line),
-            'macd_hist': last_scalar(macd_hist_line),
-            'stoch_k': last_scalar(stoch_k),
-            'stoch_d': last_scalar(stoch_d),
-            'atr': last_scalar(atr),
-            'bollinger_upper': last_scalar(bollinger_upper),
-            'bollinger_middle': last_scalar(bollinger_middle),
-            'bollinger_lower': last_scalar(bollinger_lower),
-            'obv': last_scalar(obv),
-            'adx': last_scalar(adx),
-            'plus_di': last_scalar(plus_di),
-            'minus_di': last_scalar(minus_di),
-            'volume': last_scalar(volume)
-        }
-        
-        # تسجيل تفصيلي للمؤشرات
-        log_i(f"📊 BYBIT MATCHED INDICATORS (15m):")
-        log_i(f"   RSI(14): {result['rsi']:.2f}")
-        log_i(f"   ADX(14): {result['adx']:.2f}")
-        log_i(f"   +DI(14): {result['plus_di']:.2f}")
-        log_i(f"   -DI(14): {result['minus_di']:.2f}")
-        log_i(f"   MACD(12,26,9): {result['macd']:.6f} | Signal: {result['macd_signal']:.6f} | Hist: {result['macd_hist']:.6f}")
-        log_i(f"   Stoch(14,3,3): K={result['stoch_k']:.2f} | D={result['stoch_d']:.2f}")
-        log_i(f"   ATR(14): {result['atr']:.6f}")
-        log_i(f"   Bollinger(20,2): Upper={result['bollinger_upper']:.6f} | Middle={result['bollinger_middle']:.6f} | Lower={result['bollinger_lower']:.6f}")
-        log_i(f"   SMA(20): {result['sma_20']:.6f} | SMA(50): {result['sma_50']:.6f} | EMA(20): {result['ema_20']:.6f}")
-        
-        return result
-    except Exception as e:
-        log_e(f"Advanced indicators error: {e}")
-        return {}
-
+# =================== UPDATED INDICATOR COMPUTATION ===================
 def compute_indicators(df):
-    """حساب المؤشرات الأساسية - مطابقة لـ Bybit على 15m"""
+    """حساب المؤشرات بنمط TradingView/Bybit الدقيق"""
     try:
+        if len(df) < 100:
+            return {}
+        
         close = df['close'].astype(float)
         high = df['high'].astype(float)
         low = df['low'].astype(float)
         
-        # RSI - 14 فترة (مطابق لـ Bybit)
-        rsi = ti.rsi(close, 14)
-        rsi_ma = ti.sma(rsi, 9)  # متوسط RSI 9 فترات
+        # === RSI (TradingView style) ===
+        rsi = tv.tv_rsi(close, RSI_LEN)
+        rsi_ma = tv.tv_ema(rsi, RSI_MA_LEN)
         
-        # ADX - 14 فترة (مطابق لـ Bybit)
-        adx, plus_di, minus_di = ti.adx(high, low, close, 14)
+        # === ADX + DI (TradingView style) ===
+        adx, plus_di, minus_di = tv.tv_adx(high, low, close, ADX_LEN)
         di_spread = abs(plus_di - minus_di)
         
-        # ATR - 14 فترة (مطابق لـ Bybit)
-        atr = ti.atr(high, low, close, 14)
+        # === ATR (TradingView style) ===
+        atr = tv.tv_atr(high, low, close, ATR_LEN)
         
-        result = {
+        # === MACD (TradingView style) ===
+        macd, macd_signal, macd_hist = tv.tv_macd(close)
+        
+        return {
             'rsi': last_scalar(rsi),
             'rsi_ma': last_scalar(rsi_ma),
             'adx': last_scalar(adx),
             'plus_di': last_scalar(plus_di),
             'minus_di': last_scalar(minus_di),
             'di_spread': last_scalar(di_spread),
-            'atr': last_scalar(atr)
+            'atr': last_scalar(atr),
+            'macd': last_scalar(macd),
+            'macd_signal': last_scalar(macd_signal),
+            'macd_hist': last_scalar(macd_hist)
         }
-        
-        # تسجيل المؤشرات الأساسية
-        log_i(f"📈 BASIC INDICATORS (15m):")
-        log_i(f"   RSI: {result['rsi']:.2f} | RSI_MA: {result['rsi_ma']:.2f}")
-        log_i(f"   ADX: {result['adx']:.2f} | +DI: {result['plus_di']:.2f} | -DI: {result['minus_di']:.2f}")
-        log_i(f"   DI Spread: {result['di_spread']:.2f}")
-        log_i(f"   ATR: {result['atr']:.6f}")
-        
-        return result
     except Exception as e:
-        log_e(f"Indicators error: {e}")
+        log_w(f"TradingView indicators error: {e}")
+        return {}
+
+def compute_advanced_indicators(df):
+    """حساب المؤشرات المتقدمة بنمط TradingView"""
+    try:
+        if len(df) < 100:
+            return {}
+            
+        close = df['close'].astype(float)
+        high = df['high'].astype(float)
+        low = df['low'].astype(float)
+        volume = df['volume'].astype(float)
+        
+        # المتوسطات المتحركة
+        sma_20 = tv.tv_sma(close, 20)
+        sma_50 = tv.tv_sma(close, 50)
+        ema_20 = tv.tv_ema(close, 20)
+        
+        # بولينجر باندز
+        bb_middle = tv.tv_sma(close, 20)
+        bb_std = close.rolling(20).std()
+        bb_upper = bb_middle + (bb_std * 2)
+        bb_lower = bb_middle - (bb_std * 2)
+        
+        # ستوكاستك
+        stoch_k, stoch_d = tv.tv_stoch(high, low, close)
+        
+        # OBV
+        obv = tv.tv_obv(close, volume)
+        
+        return {
+            'sma_20': last_scalar(sma_20),
+            'sma_50': last_scalar(sma_50),
+            'ema_20': last_scalar(ema_20),
+            'bollinger_upper': last_scalar(bb_upper),
+            'bollinger_middle': last_scalar(bb_middle),
+            'bollinger_lower': last_scalar(bb_lower),
+            'stoch_k': last_scalar(stoch_k),
+            'stoch_d': last_scalar(stoch_d),
+            'obv': last_scalar(obv),
+            'volume': last_scalar(volume)
+        }
+    except Exception as e:
+        log_w(f"Advanced TradingView indicators error: {e}")
         return {}
 
 def compute_candles(df):
@@ -1232,7 +1201,7 @@ def golden_zone_check(df, indicators):
 # =================== ULTRA PROFESSIONAL COUNCIL AI ===================
 def ultra_professional_council_ai(df):
     """
-    مجلس الإدارة المحترف - يدمج كل استراتيجيات التداول المتقدمة
+    مجلس الإدارة المحترف - يدمج كل استراتيجيات التداول المتقدمة مع مؤشرات TradingView الدقيقة
     """
     try:
         if len(df) < 100:
@@ -1248,7 +1217,7 @@ def ultra_professional_council_ai(df):
         manipulation_analysis = pro_market_analyzer.detect_manipulation_volatility(df)
         price_testing = pro_market_analyzer.analyze_price_testing(df)
         
-        # === المؤشرات المتقدمة ===
+        # === المؤشرات المتقدمة بنمط TradingView ===
         advanced_indicators = compute_advanced_indicators(df)
         basic_indicators = compute_indicators(df)
         indicators = {**basic_indicators, **advanced_indicators}
@@ -1409,14 +1378,16 @@ def ultra_professional_council_ai(df):
                 logs.append(f"🌊 Strong Sell Flow (z: {delta_z:.2f})")
                 confidence_factors.append(1.5)
         
-        # ===== 10. المؤشرات التقليدية المحسنة =====
+        # ===== 10. المؤشرات التقليدية المحسنة (TradingView Style) =====
         rsi = indicators.get('rsi', 50)
         macd = indicators.get('macd', 0)
         macd_signal = indicators.get('macd_signal', 0)
         adx = indicators.get('adx', 0)
         atr = indicators.get('atr', 0.001)
+        plus_di = indicators.get('plus_di', 0)
+        minus_di = indicators.get('minus_di', 0)
         
-        # RSI مع مستويات متقدمة
+        # RSI مع مستويات متقدمة (TradingView Style)
         if rsi < 25:
             score_b += 2.5
             votes_b += 2
@@ -1432,7 +1403,7 @@ def ultra_professional_council_ai(df):
             score_s += 1.0
             logs.append("📊 RSI Near Overbought")
         
-        # MACD مع تأكيد متقدم
+        # MACD مع تأكيد متقدم (TradingView Style)
         if macd > macd_signal and indicators.get('macd_hist', 0) > 0:
             score_b += 1.5
             votes_b += 1
@@ -1442,14 +1413,18 @@ def ultra_professional_council_ai(df):
             votes_s += 1
             logs.append("📉 MACD Bearish Cross")
         
-        # ADX مع تحليل القوة المتقدم
+        # ADX مع تحليل القوة المتقدم (TradingView Style)
         if adx > 25:
-            if score_b > score_s:
-                score_b *= 1.5
-                logs.append(f"💪 Strong Uptrend - Boosting BUY (ADX: {adx:.1f})")
+            if plus_di > minus_di:
+                score_b += 2.0
+                votes_b += 2
+                logs.append(f"💪 Strong Uptrend - ADX: {adx:.1f}, +DI: {plus_di:.1f}")
+                confidence_factors.append(1.5)
             else:
-                score_s *= 1.5
-                logs.append(f"💪 Strong Downtrend - Boosting SELL (ADX: {adx:.1f})")
+                score_s += 2.0
+                votes_s += 2
+                logs.append(f"💪 Strong Downtrend - ADX: {adx:.1f}, -DI: {minus_di:.1f}")
+                confidence_factors.append(1.5)
         elif adx < 15:
             # سوق جانبي - تقليل الثقة في الصفقات الاتجاهية
             score_b *= 0.7
@@ -1881,16 +1856,17 @@ def close_market_strict(reason=""):
 
 # =================== PROFESSIONAL TRADING LOOP ===================
 def professional_trading_loop():
-    """الحلقة الرئيسية للتداول المحترف - مع تحسين عرض المؤشرات"""
+    """الحلقة الرئيسية للتداول المحترف"""
     global wait_for_next_signal_side
     
-    log_banner("STARTING ULTIMATE PROFESSIONAL TRADING BOT - BYBIT MATCHED 15m")
+    log_banner("STARTING ULTIMATE PROFESSIONAL TRADING BOT - TRADINGVIEW PRECISION")
     log_i(f"🤖 Bot Version: {BOT_VERSION}")
     log_i(f"💱 Exchange: {EXCHANGE_NAME.upper()}")
     log_i(f"📈 Symbol: {SYMBOL}")
     log_i(f"⏰ Interval: {INTERVAL}")
     log_i(f"🎯 Leverage: {LEVERAGE}x")
     log_i(f"📊 Risk Allocation: {RISK_ALLOC*100}%")
+    log_i(f"🎯 Indicators: TradingView/Bybit Precision Mode")
     
     # عرض إحصائيات البداية
     performance = pro_trade_manager.analyze_trade_performance()
@@ -1901,20 +1877,12 @@ def professional_trading_loop():
             # جمع البيانات الأساسية
             balance = balance_usdt()
             current_price = price_now()
-            df = fetch_ohlcv(limit=200)
+            df = fetch_ohlcv(limit=500)  # زيادة الحد لضمان دقة المؤشرات
             
             if df.empty or current_price is None:
                 log_w("📭 No data available - retrying...")
                 time.sleep(BASE_SLEEP)
                 continue
-            
-            # ===== حساب وعرض المؤشرات المفصلة =====
-            log_i("=" * 80)
-            log_i(f"🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            log_i(f"💰 Price: {current_price:.6f} | Balance: {balance:.2f} USDT")
-            
-            # حساب المؤشرات المتقدمة (تظهر تفاصيل كاملة)
-            advanced_indicators = compute_advanced_indicators(df)
             
             # قرار مجلس الإدارة المحترف
             council_data = ultra_professional_council_ai(df)
@@ -1924,7 +1892,7 @@ def professional_trading_loop():
             STATE["last_ind"] = council_data.get("indicators", {})
             STATE["last_spread_bps"] = orderbook_spread_bps()
             
-            # ===== عرض تحليل السوق المحترف =====
+            # عرض معلومات السوق المحترفة
             if LOG_ADDONS:
                 log_i(f"🏪 MARKET ANALYSIS:")
                 log_i(f"   Phase: {council_data.get('analysis', {}).get('price_testing', {}).get('breakout_strength', 'neutral').upper()}")
@@ -1948,21 +1916,12 @@ def professional_trading_loop():
                 for i, log_msg in enumerate(council_data.get("logs", [])[-5:]):
                     log_i(f"   {i+1}. {log_msg}")
             
-            # ===== تحليل المؤشرات المفصل =====
-            indicators = council_data.get("indicators", {})
-            log_i(f"📊 TECHNICAL ANALYSIS SUMMARY (15m):")
-            log_i(f"   RSI(14): {indicators.get('rsi', 0):.2f} - {'OVERSOLD' if indicators.get('rsi', 0) < 30 else 'OVERBOUGHT' if indicators.get('rsi', 0) > 70 else 'NEUTRAL'}")
-            log_i(f"   ADX(14): {indicators.get('adx', 0):.2f} - {'STRONG TREND' if indicators.get('adx', 0) > 25 else 'WEAK TREND' if indicators.get('adx', 0) < 20 else 'MODERATE TREND'}")
-            log_i(f"   +DI/-DI: {indicators.get('plus_di', 0):.2f}/{indicators.get('minus_di', 0):.2f} - {'BULLISH' if indicators.get('plus_di', 0) > indicators.get('minus_di', 0) else 'BEARISH'}")
-            log_i(f"   MACD: {'BULLISH' if indicators.get('macd', 0) > indicators.get('macd_signal', 0) else 'BEARISH'}")
-            log_i(f"   Stoch: K={indicators.get('stoch_k', 0):.2f}, D={indicators.get('stoch_d', 0):.2f}")
-            
-            # ===== إدارة المركز المفتوح =====
+            # إدارة المركز المفتوح
             if STATE["open"]:
                 STATE["bars"] += 1
                 manage_professional_position(df, council_data, current_price)
             
-            # ===== فتح صفقات جديدة =====
+            # فتح صفقات جديدة
             if not STATE["open"]:
                 signal_side = None
                 signal_reason = ""
@@ -2042,8 +2001,6 @@ def professional_trading_loop():
             
             # الانتظار للدورة التالية
             sleep_time = NEAR_CLOSE_S if time_to_candle_close(df) <= 10 else BASE_SLEEP
-            log_i(f"⏰ Next update in {sleep_time}s | Candle closes in {time_to_candle_close(df)}s")
-            log_i("=" * 80)
             time.sleep(sleep_time)
             
         except Exception as e:
@@ -2069,12 +2026,13 @@ def home():
     <html>
         <head><title>SUI ULTRA PRO AI BOT</title></head>
         <body>
-            <h1>🚀 SUI ULTRA PRO AI BOT - الإصدار المحترف</h1>
+            <h1>🚀 SUI ULTRA PRO AI BOT - الإصدار المحترف مع مؤشرات TradingView</h1>
             <p><strong>Version:</strong> {BOT_VERSION}</p>
             <p><strong>Exchange:</strong> {EXCHANGE_NAME.upper()}</p>
             <p><strong>Symbol:</strong> {SYMBOL}</p>
             <p><strong>Status:</strong> {'🟢 LIVE' if MODE_LIVE else '🟡 PAPER'}</p>
             <p><strong>Position:</strong> {'🟢 OPEN' if STATE['open'] else '🔴 CLOSED'}</p>
+            <p><strong>Indicators:</strong> TradingView/Bybit Precision Mode</p>
         </body>
     </html>
     """
@@ -2086,7 +2044,8 @@ def health():
         "timestamp": datetime.now().isoformat(),
         "exchange": EXCHANGE_NAME,
         "symbol": SYMBOL,
-        "position_open": STATE["open"]
+        "position_open": STATE["open"],
+        "indicators_mode": "TradingView Precision"
     })
 
 @app.route("/performance")
@@ -2097,7 +2056,7 @@ def performance():
 # =================== STARTUP ===================
 def startup_sequence():
     """تسلسل بدء التشغيل"""
-    log_banner("PROFESSIONAL SYSTEM INITIALIZATION")
+    log_banner("PROFESSIONAL SYSTEM INITIALIZATION - TRADINGVIEW PRECISION")
     
     # تحميل الحالة السابقة
     loaded_state = load_state()
@@ -2127,7 +2086,7 @@ def startup_sequence():
     if performance.get('suggestions'):
         log_i(f"💡 Suggestions: {', '.join(performance['suggestions'])}")
     
-    log_g("🚀 ULTIMATE PROFESSIONAL TRADING BOT READY!")
+    log_g("🚀 ULTIMATE PROFESSIONAL TRADING BOT READY! - TRADINGVIEW PRECISION ACTIVE")
     return True
 
 # =================== MAIN EXECUTION ===================
