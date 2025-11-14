@@ -8,6 +8,7 @@ SUI ULTRA PRO AI BOT - الإصدار الذكي المحترف المتكامل
 • نظام Footprint + Diagonal Order-Flow المتقدم
 • Multi-Exchange Support: BingX & Bybit
 • TradingView/Bybit Precision Indicators
+• نظام كشف التذبذب المتقدم
 """
 
 import os, time, math, random, signal, sys, traceback, logging, json
@@ -142,6 +143,252 @@ class TradingViewIndicators:
 # إنشاء كائن المؤشرات بنمط TradingView
 tv = TradingViewIndicators()
 
+# =================== ADVANCED VOLATILITY DETECTOR ===================
+class AdvancedVolatilityDetector:
+    """كاشف التذبذب المتقدم للحماية من الأسواق المتقلبة"""
+    
+    def __init__(self):
+        self.volatility_history = []
+        self.high_volatility_periods = []
+        self.last_alert_time = 0
+        self.cooldown_period = 300  # 5 دقائق بين التنبيهات
+        
+    def calculate_volatility_metrics(self, df):
+        """حساب مقاييس التذبذب المتقدمة"""
+        try:
+            if len(df) < 50:
+                return {"volatility_level": "low", "atr_ratio": 0, "price_oscillation": 0, "recommendation": "insufficient_data"}
+            
+            high = df['high'].astype(float)
+            low = df['low'].astype(float)
+            close = df['close'].astype(float)
+            
+            # 1. نسبة ATR (المدى الحقيقي)
+            atr = tv.tv_atr(high, low, close, 14)
+            current_atr = atr.iloc[-1]
+            avg_atr = atr.tail(50).mean()
+            atr_ratio = current_atr / avg_atr if avg_atr > 0 else 1.0
+            
+            # 2. تذبذب السعر (الانحراف المعياري للنسبة المئوية للتغير)
+            price_changes = close.pct_change().dropna()
+            price_volatility = price_changes.rolling(20).std().iloc[-1] * 100  # كنسبة مئوية
+            
+            # 3. نطاق بولينجر (عرض النطاق)
+            bb_upper, bb_middle, bb_lower = tv.tv_bollinger_bands(close, 20, 2)
+            bb_width = ((bb_upper - bb_lower) / bb_middle * 100).iloc[-1]
+            
+            # 4. تقلبات RSI
+            rsi = tv.tv_rsi(close, 14)
+            rsi_volatility = rsi.rolling(14).std().iloc[-1]
+            
+            # 5. حجم التقلبات النسبي
+            volume = df['volume'].astype(float)
+            volume_avg = volume.tail(20).mean()
+            current_volume = volume.iloc[-1]
+            volume_ratio = current_volume / volume_avg if volume_avg > 0 else 1.0
+            
+            # تحديد مستوى التذبذب
+            volatility_score = 0
+            volatility_score += 2.0 if atr_ratio > 1.8 else 1.0 if atr_ratio > 1.3 else 0
+            volatility_score += 2.0 if price_volatility > 2.5 else 1.0 if price_volatility > 1.5 else 0
+            volatility_score += 1.5 if bb_width > 6.0 else 0.5 if bb_width > 4.0 else 0
+            volatility_score += 1.0 if rsi_volatility > 15 else 0
+            volatility_score += 0.5 if volume_ratio > 2.0 else 0
+            
+            if volatility_score >= 5:
+                volatility_level = "extreme"
+                recommendation = "NO_TRADING"
+                color = "🔴"
+            elif volatility_score >= 3:
+                volatility_level = "high"
+                recommendation = "AVOID_NEW_TRADES"
+                color = "🟡"
+            elif volatility_score >= 1.5:
+                volatility_level = "medium"
+                recommendation = "CAUTION"
+                color = "🟠"
+            else:
+                volatility_level = "low"
+                recommendation = "SAFE"
+                color = "🟢"
+            
+            # تسجيل فترة التذبذب العالي
+            current_time = time.time()
+            if volatility_level in ["high", "extreme"]:
+                self.high_volatility_periods.append({
+                    'timestamp': current_time,
+                    'level': volatility_level,
+                    'score': volatility_score,
+                    'metrics': {
+                        'atr_ratio': round(atr_ratio, 2),
+                        'price_volatility': round(price_volatility, 2),
+                        'bb_width': round(bb_width, 2),
+                        'rsi_volatility': round(rsi_volatility, 2),
+                        'volume_ratio': round(volume_ratio, 2)
+                    }
+                })
+                # الاحتفاظ بسجل آخر 20 فترة فقط
+                self.high_volatility_periods = self.high_volatility_periods[-20:]
+            
+            result = {
+                "volatility_level": volatility_level,
+                "volatility_score": round(volatility_score, 2),
+                "atr_ratio": round(atr_ratio, 2),
+                "price_volatility": round(price_volatility, 2),
+                "bb_width": round(bb_width, 2),
+                "rsi_volatility": round(rsi_volatility, 2),
+                "volume_ratio": round(volume_ratio, 2),
+                "recommendation": recommendation,
+                "color": color,
+                "timestamp": current_time
+            }
+            
+            # إرسال تنبيه إذا كان التذبذب عالي ولم يمضِ وقت كافي منذ آخر تنبيه
+            if volatility_level in ["high", "extreme"] and (current_time - self.last_alert_time) > self.cooldown_period:
+                self.last_alert_time = current_time
+                result["alert"] = True
+            else:
+                result["alert"] = False
+                
+            return result
+            
+        except Exception as e:
+            return {"volatility_level": "unknown", "error": str(e), "recommendation": "ERROR"}
+    
+    def should_avoid_trading(self, volatility_data):
+        """تحديد إذا كان يجب تجنب التداول بسبب التذبذب"""
+        if not volatility_data or volatility_data.get("volatility_level") in ["unknown", "error"]:
+            return False
+        
+        return volatility_data["volatility_level"] in ["high", "extreme"]
+    
+    def get_volatility_history_summary(self):
+        """الحصول على ملخص تاريخ التذبذب"""
+        if not self.high_volatility_periods:
+            return "No high volatility periods recently"
+        
+        recent_periods = [p for p in self.high_volatility_periods 
+                         if time.time() - p['timestamp'] < 3600]  # آخر ساعة
+        
+        if not recent_periods:
+            return "No high volatility in the last hour"
+        
+        extreme_count = len([p for p in recent_periods if p['level'] == 'extreme'])
+        high_count = len([p for p in recent_periods if p['level'] == 'high'])
+        
+        return f"Recent volatility: {extreme_count} extreme, {high_count} high periods in last hour"
+
+# إنشاء كاشف التذبذب
+volatility_detector = AdvancedVolatilityDetector()
+
+# =================== PORTFOLIO TRACKER ===================
+class PortfolioTracker:
+    """تتبع محفظة التداول والأرباح التراكمية"""
+    
+    def __init__(self):
+        self.initial_balance = None
+        self.daily_profits = []
+        self.hourly_balances = []
+        self.peak_balance = 0
+        self.drawdown = 0
+        
+    def update_balance(self, current_balance):
+        """تحديث رصيد المحفظة"""
+        try:
+            if self.initial_balance is None and current_balance:
+                self.initial_balance = current_balance
+                self.peak_balance = current_balance
+            
+            if current_balance and self.initial_balance:
+                # تحديث أعلى رصيد
+                if current_balance > self.peak_balance:
+                    self.peak_balance = current_balance
+                
+                # حساب ال drawdown
+                self.drawdown = ((self.peak_balance - current_balance) / self.peak_balance) * 100
+                
+                # تسجيل الرصيد بالساعة
+                current_hour = datetime.now().replace(minute=0, second=0, microsecond=0)
+                self.hourly_balances.append({
+                    'timestamp': current_hour,
+                    'balance': current_balance,
+                    'equity': current_balance
+                })
+                
+                # الاحتفاظ بسجل 24 ساعة فقط
+                twenty_four_hours_ago = datetime.now() - timedelta(hours=24)
+                self.hourly_balances = [b for b in self.hourly_balances 
+                                      if b['timestamp'] >= twenty_four_hours_ago]
+        
+        except Exception as e:
+            print(f"Portfolio update error: {e}")
+    
+    def record_trade_profit(self, profit):
+        """تسجيل ربح صفقة جديدة"""
+        try:
+            if profit != 0:
+                self.daily_profits.append({
+                    'timestamp': datetime.now(),
+                    'profit': profit,
+                    'type': 'win' if profit > 0 else 'loss'
+                })
+                
+                # الاحتفاظ بسجل 7 أيام فقط
+                seven_days_ago = datetime.now() - timedelta(days=7)
+                self.daily_profits = [p for p in self.daily_profits 
+                                    if p['timestamp'] >= seven_days_ago]
+        except Exception as e:
+            print(f"Profit recording error: {e}")
+    
+    def get_portfolio_summary(self, current_balance):
+        """الحصول على ملخص المحفظة"""
+        try:
+            if not self.initial_balance or not current_balance:
+                return None
+            
+            total_profit = current_balance - self.initial_balance
+            total_return = (total_profit / self.initial_balance) * 100
+            
+            # حساب الأرباح اليومية
+            today = datetime.now().date()
+            today_profits = [p for p in self.daily_profits 
+                           if p['timestamp'].date() == today]
+            daily_profit = sum(p['profit'] for p in today_profits)
+            daily_return = (daily_profit / current_balance) * 100 if current_balance > 0 else 0
+            
+            # إحصائيات الأداء
+            winning_trades = [p for p in self.daily_profits if p['type'] == 'win']
+            losing_trades = [p for p in self.daily_profits if p['type'] == 'loss']
+            
+            win_rate = (len(winning_trades) / len(self.daily_profits)) * 100 if self.daily_profits else 0
+            avg_win = sum(p['profit'] for p in winning_trades) / len(winning_trades) if winning_trades else 0
+            avg_loss = sum(p['profit'] for p in losing_trades) / len(losing_trades) if losing_trades else 0
+            
+            return {
+                'current_balance': round(current_balance, 2),
+                'initial_balance': round(self.initial_balance, 2),
+                'total_profit': round(total_profit, 2),
+                'total_return': round(total_return, 2),
+                'daily_profit': round(daily_profit, 2),
+                'daily_return': round(daily_return, 2),
+                'peak_balance': round(self.peak_balance, 2),
+                'drawdown': round(self.drawdown, 2),
+                'win_rate': round(win_rate, 1),
+                'total_trades': len(self.daily_profits),
+                'winning_trades': len(winning_trades),
+                'losing_trades': len(losing_trades),
+                'avg_win': round(avg_win, 2),
+                'avg_loss': round(avg_loss, 2),
+                'profit_factor': abs(avg_win / avg_loss) if avg_loss != 0 else float('inf')
+            }
+            
+        except Exception as e:
+            print(f"Portfolio summary error: {e}")
+            return None
+
+# إنشاء متتبع المحفظة
+portfolio_tracker = PortfolioTracker()
+
 # =================== ENV / MODE ===================
 EXCHANGE_NAME = os.getenv("EXCHANGE", "bingx").lower()
 
@@ -166,7 +413,7 @@ SHADOW_MODE_DASHBOARD = False
 DRY_RUN = False
 
 # ==== Addon: Logging + Recovery Settings ====
-BOT_VERSION = f"SUI ULTRA PRO AI v10.0 — {EXCHANGE_NAME.upper()} - TRADINGVIEW PRECISION"
+BOT_VERSION = f"SUI ULTRA PRO AI v10.0 — {EXCHANGE_NAME.upper()} - VOLATILITY GUARD"
 print("🚀 Booting:", BOT_VERSION, flush=True)
 
 STATE_PATH = "./bot_state.json"
@@ -270,6 +517,11 @@ TREND_ATR_MULT = 1.8
 MAX_TRADES_PER_HOUR = 8
 COOLDOWN_SECS_AFTER_CLOSE = 45
 ADX_GATE = 17
+
+# ===== VOLATILITY PROTECTION SETTINGS =====
+VOLATILITY_PROTECTION = True
+MAX_VOLATILITY_SCORE = 4.0
+VOLATILITY_COOLDOWN_MIN = 10
 
 # ===== SUPER SCALP ENGINE =====
 SCALP_MODE            = True
@@ -669,6 +921,9 @@ class ProfessionalTradeManager:
             self.performance_metrics['average_win'] = sum(wins) / len(wins)
         if losses:
             self.performance_metrics['average_loss'] = abs(sum(losses) / len(losses))
+        
+        # تحديث متتبع المحفظة
+        portfolio_tracker.record_trade_profit(profit)
     
     def get_win_rate(self):
         """الحصول على نسبة النجاح"""
@@ -723,6 +978,12 @@ def log_w(msg):
 
 def log_e(msg): 
     print(f"❌ {datetime.now().strftime('%H:%M:%S')} {msg}", flush=True)
+
+def log_v(msg): 
+    print(f"📊 {datetime.now().strftime('%H:%M:%S')} {msg}", flush=True)
+
+def log_p(msg): 
+    print(f"💰 {datetime.now().strftime('%H:%M:%S')} {msg}", flush=True)
 
 def log_banner(text): 
     print(f"\n{'—'*12} {text} {'—'*12}\n", flush=True)
@@ -1198,6 +1459,40 @@ def golden_zone_check(df, indicators):
     except Exception as e:
         return {'ok': False, 'score': 0}
 
+# =================== ENHANCED LOGGING WITH INDICATORS AND PORTFOLIO ===================
+def log_detailed_indicators(indicators, volatility_data, portfolio_summary):
+    """تسجيل مفصل للمؤشرات والمحفظة"""
+    try:
+        if not indicators:
+            return
+        
+        log_v("📊 DETAILED TECHNICAL INDICATORS:")
+        log_v(f"   RSI: {indicators.get('rsi', 0):.1f} | MA: {indicators.get('rsi_ma', 0):.1f}")
+        log_v(f"   ADX: {indicators.get('adx', 0):.1f} | +DI: {indicators.get('plus_di', 0):.1f} | -DI: {indicators.get('minus_di', 0):.1f}")
+        log_v(f"   MACD: {indicators.get('macd', 0):.4f} | Signal: {indicators.get('macd_signal', 0):.4f} | Hist: {indicators.get('macd_hist', 0):.4f}")
+        log_v(f"   ATR: {indicators.get('atr', 0):.4f} | SMA20: {indicators.get('sma_20', 0):.4f} | EMA20: {indicators.get('ema_20', 0):.4f}")
+        
+        # تسجيل بيانات التذبذب
+        if volatility_data:
+            color = volatility_data.get('color', '⚪')
+            level = volatility_data.get('volatility_level', 'unknown')
+            score = volatility_data.get('volatility_score', 0)
+            log_v(f"   {color} VOLATILITY: {level.upper()} (Score: {score})")
+            if level in ["high", "extreme"]:
+                log_v(f"   📈 ATR Ratio: {volatility_data.get('atr_ratio', 0)} | Price Vol: {volatility_data.get('price_volatility', 0):.2f}%")
+                log_v(f"   ⚠️  Recommendation: {volatility_data.get('recommendation', 'UNKNOWN')}")
+        
+        # تسجيل بيانات المحفظة
+        if portfolio_summary:
+            log_p("💰 PORTFOLIO SUMMARY:")
+            log_p(f"   Balance: ${portfolio_summary.get('current_balance', 0):.2f} | Today: ${portfolio_summary.get('daily_profit', 0):.2f} ({portfolio_summary.get('daily_return', 0):.2f}%)")
+            log_p(f"   Total PnL: ${portfolio_summary.get('total_profit', 0):.2f} ({portfolio_summary.get('total_return', 0):.2f}%)")
+            log_p(f"   Win Rate: {portfolio_summary.get('win_rate', 0):.1f}% | Trades: {portfolio_summary.get('total_trades', 0)}")
+            log_p(f"   Drawdown: {portfolio_summary.get('drawdown', 0):.2f}% | Peak: ${portfolio_summary.get('peak_balance', 0):.2f}")
+            
+    except Exception as e:
+        log_w(f"Detailed logging error: {e}")
+
 # =================== ULTRA PROFESSIONAL COUNCIL AI ===================
 def ultra_professional_council_ai(df):
     """
@@ -1228,6 +1523,9 @@ def ultra_professional_council_ai(df):
         orderbook = bookmap_snapshot(ex, SYMBOL)
         liquidity_analysis = smc_engine.analyze_liquidity(df, orderbook)
         
+        # === تحليل التذبذب ===
+        volatility_data = volatility_detector.calculate_volatility_metrics(df)
+        
         votes_b = 0
         votes_s = 0
         score_b = 0.0
@@ -1236,6 +1534,17 @@ def ultra_professional_council_ai(df):
         confidence_factors = []
         
         current_price = float(df['close'].iloc[-1])
+        
+        # ===== 0. فحص التذبذب أولاً (حماية رئيسية) =====
+        if VOLATILITY_PROTECTION and volatility_detector.should_avoid_trading(volatility_data):
+            logs.append(f"🚫 VOLATILITY PROTECTION: {volatility_data.get('volatility_level', 'unknown').upper()} market - Trading suspended")
+            # إرجاع نتيجة تمنع التداول
+            return {
+                "b": 0, "s": 0, "score_b": 0.0, "score_s": 0.0, 
+                "confidence": 0.0, "trade_type": "avoid", "logs": logs,
+                "volatility_alert": True,
+                "analysis": {"volatility": volatility_data}
+            }
         
         # ===== 1. تحليل العرض والطلب =====
         # الطلب (دعم)
@@ -1481,7 +1790,8 @@ def ultra_professional_council_ai(df):
                     "order_blocks": len(current_obs),
                     "fvgs": len(current_fvgs),
                     "bos_choch": bos_choch
-                }
+                },
+                "volatility": volatility_data
             },
             "indicators": indicators
         }
@@ -1859,7 +2169,7 @@ def professional_trading_loop():
     """الحلقة الرئيسية للتداول المحترف"""
     global wait_for_next_signal_side
     
-    log_banner("STARTING ULTIMATE PROFESSIONAL TRADING BOT - TRADINGVIEW PRECISION")
+    log_banner("STARTING ULTIMATE PROFESSIONAL TRADING BOT - VOLATILITY GUARD ACTIVE")
     log_i(f"🤖 Bot Version: {BOT_VERSION}")
     log_i(f"💱 Exchange: {EXCHANGE_NAME.upper()}")
     log_i(f"📈 Symbol: {SYMBOL}")
@@ -1867,6 +2177,7 @@ def professional_trading_loop():
     log_i(f"🎯 Leverage: {LEVERAGE}x")
     log_i(f"📊 Risk Allocation: {RISK_ALLOC*100}%")
     log_i(f"🎯 Indicators: TradingView/Bybit Precision Mode")
+    log_i(f"🛡️ Volatility Protection: {'ACTIVE' if VOLATILITY_PROTECTION else 'INACTIVE'}")
     
     # عرض إحصائيات البداية
     performance = pro_trade_manager.analyze_trade_performance()
@@ -1883,6 +2194,10 @@ def professional_trading_loop():
                 log_w("📭 No data available - retrying...")
                 time.sleep(BASE_SLEEP)
                 continue
+            
+            # تحديث متتبع المحفظة
+            portfolio_tracker.update_balance(balance)
+            portfolio_summary = portfolio_tracker.get_portfolio_summary(balance)
             
             # قرار مجلس الإدارة المحترف
             council_data = ultra_professional_council_ai(df)
@@ -1916,6 +2231,10 @@ def professional_trading_loop():
                 for i, log_msg in enumerate(council_data.get("logs", [])[-5:]):
                     log_i(f"   {i+1}. {log_msg}")
             
+            # تسجيل المؤشرات والمحفظة المفصلة
+            volatility_data = council_data.get('analysis', {}).get('volatility', {})
+            log_detailed_indicators(council_data.get("indicators", {}), volatility_data, portfolio_summary)
+            
             # إدارة المركز المفتوح
             if STATE["open"]:
                 STATE["bars"] += 1
@@ -1925,6 +2244,12 @@ def professional_trading_loop():
             if not STATE["open"]:
                 signal_side = None
                 signal_reason = ""
+                
+                # فحص الحماية من التذبذب أولاً
+                if council_data.get("volatility_alert"):
+                    log_w(f"🚫 VOLATILITY PROTECTION: Trading suspended due to {volatility_data.get('volatility_level', 'high')} volatility")
+                    time.sleep(BASE_SLEEP * 2)  # انتظار أطول في أوقات التذبذب
+                    continue
                 
                 # شروط دخول محترفة - عتبات عالية للجودة
                 min_score = 18.0  # حد أدنى عالي للجودة
@@ -2022,6 +2347,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
+    portfolio_summary = portfolio_tracker.get_portfolio_summary(balance_usdt())
     return f"""
     <html>
         <head><title>SUI ULTRA PRO AI BOT</title></head>
@@ -2033,6 +2359,11 @@ def home():
             <p><strong>Status:</strong> {'🟢 LIVE' if MODE_LIVE else '🟡 PAPER'}</p>
             <p><strong>Position:</strong> {'🟢 OPEN' if STATE['open'] else '🔴 CLOSED'}</p>
             <p><strong>Indicators:</strong> TradingView/Bybit Precision Mode</p>
+            <p><strong>Volatility Protection:</strong> {'🟢 ACTIVE' if VOLATILITY_PROTECTION else '🔴 INACTIVE'}</p>
+            <h2>Portfolio Summary</h2>
+            <p><strong>Current Balance:</strong> ${portfolio_summary.get('current_balance', 0) if portfolio_summary else 'N/A'}</p>
+            <p><strong>Total Profit:</strong> ${portfolio_summary.get('total_profit', 0) if portfolio_summary else 'N/A'}</p>
+            <p><strong>Win Rate:</strong> {portfolio_summary.get('win_rate', 0) if portfolio_summary else 'N/A'}%</p>
         </body>
     </html>
     """
@@ -2045,18 +2376,29 @@ def health():
         "exchange": EXCHANGE_NAME,
         "symbol": SYMBOL,
         "position_open": STATE["open"],
-        "indicators_mode": "TradingView Precision"
+        "indicators_mode": "TradingView Precision",
+        "volatility_protection": VOLATILITY_PROTECTION
     })
 
 @app.route("/performance")
 def performance():
     performance_data = pro_trade_manager.analyze_trade_performance()
-    return jsonify(performance_data)
+    portfolio_data = portfolio_tracker.get_portfolio_summary(balance_usdt())
+    return jsonify({
+        "trade_performance": performance_data,
+        "portfolio": portfolio_data
+    })
+
+@app.route("/volatility")
+def volatility_status():
+    df = fetch_ohlcv(limit=100)
+    volatility_data = volatility_detector.calculate_volatility_metrics(df)
+    return jsonify(volatility_data)
 
 # =================== STARTUP ===================
 def startup_sequence():
     """تسلسل بدء التشغيل"""
-    log_banner("PROFESSIONAL SYSTEM INITIALIZATION - TRADINGVIEW PRECISION")
+    log_banner("PROFESSIONAL SYSTEM INITIALIZATION - VOLATILITY GUARD ACTIVE")
     
     # تحميل الحالة السابقة
     loaded_state = load_state()
@@ -2072,6 +2414,13 @@ def startup_sequence():
         log_g(f"✅ Exchange connection successful")
         log_g(f"💰 Balance: {balance:.2f} USDT")
         log_g(f"💰 Current price: {price:.6f}")
+        
+        # تحديث متتبع المحفظة
+        portfolio_tracker.update_balance(balance)
+        portfolio_summary = portfolio_tracker.get_portfolio_summary(balance)
+        if portfolio_summary:
+            log_p(f"📈 Portfolio initialized: ${portfolio_summary.get('current_balance', 0):.2f}")
+        
     except Exception as e:
         log_e(f"❌ Exchange connection failed: {e}")
         return False
@@ -2086,7 +2435,15 @@ def startup_sequence():
     if performance.get('suggestions'):
         log_i(f"💡 Suggestions: {', '.join(performance['suggestions'])}")
     
-    log_g("🚀 ULTIMATE PROFESSIONAL TRADING BOT READY! - TRADINGVIEW PRECISION ACTIVE")
+    # اختبار كاشف التذبذب
+    try:
+        df = fetch_ohlcv(limit=100)
+        volatility_data = volatility_detector.calculate_volatility_metrics(df)
+        log_i(f"🛡️ Volatility Detector: {volatility_data.get('color', '⚪')} {volatility_data.get('volatility_level', 'unknown').upper()} - {volatility_data.get('recommendation', 'UNKNOWN')}")
+    except Exception as e:
+        log_w(f"Volatility detector test failed: {e}")
+    
+    log_g("🚀 ULTIMATE PROFESSIONAL TRADING BOT READY! - VOLATILITY GUARD ACTIVE")
     return True
 
 # =================== MAIN EXECUTION ===================
