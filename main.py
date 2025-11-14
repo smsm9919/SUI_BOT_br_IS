@@ -9,6 +9,7 @@ SUI ULTRA PRO AI BOT - الإصدار الذكي المحترف المتكامل
 • Multi-Exchange Support: BingX & Bybit
 • TradingView/Bybit Precision Indicators
 • نظام كشف التذبذب المتقدم
+• نظام التسجيل المحترف المتكامل
 """
 
 import os, time, math, random, signal, sys, traceback, logging, json
@@ -389,6 +390,310 @@ class PortfolioTracker:
 # إنشاء متتبع المحفظة
 portfolio_tracker = PortfolioTracker()
 
+# =================== PROFESSIONAL TRADING LOGGER ===================
+class ProfessionalTradingLogger:
+    """نظام تسجيل محترف للتداول"""
+    
+    @staticmethod
+    def log_trading_session(balance, portfolio_summary, indicators, volatility_data, council_data, position_open=False):
+        """تسجيل جلسة التداول الكاملة"""
+        try:
+            print("\n" + "="*80)
+            print("🎯 SUI ULTRA PRO AI - TRADING SESSION REPORT")
+            print("="*80)
+            
+            # قسم المحفظة والأرباح
+            ProfessionalTradingLogger._log_portfolio_section(balance, portfolio_summary)
+            
+            # قسم المؤشرات الفنية
+            ProfessionalTradingLogger._log_indicators_section(indicators)
+            
+            # قسم التذبذب
+            ProfessionalTradingLogger._log_volatility_section(volatility_data)
+            
+            # قسم مجلس التصويت
+            ProfessionalTradingLogger._log_council_section(council_data)
+            
+            # قسم المناطق الاستراتيجية
+            ProfessionalTradingLogger._log_strategy_zones_section(council_data)
+            
+            print("="*80)
+            
+        except Exception as e:
+            print(f"Professional logging error: {e}")
+
+    @staticmethod
+    def _log_portfolio_section(balance, portfolio_summary):
+        """تسجيل قسم المحفظة"""
+        print("💰 PORTFOLIO STATUS:")
+        if portfolio_summary:
+            current_balance = portfolio_summary.get('current_balance', 0)
+            total_profit = portfolio_summary.get('total_profit', 0)
+            total_return = portfolio_summary.get('total_return', 0)
+            daily_profit = portfolio_summary.get('daily_profit', 0)
+            win_rate = portfolio_summary.get('win_rate', 0)
+            
+            profit_color = "🟢" if total_profit >= 0 else "🔴"
+            daily_color = "🟢" if daily_profit >= 0 else "🔴"
+            
+            print(f"   {profit_color} Balance: ${current_balance:.2f}")
+            print(f"   {profit_color} Total PnL: ${total_profit:.2f} ({total_return:.2f}%)")
+            print(f"   {daily_color} Today: ${daily_profit:.2f}")
+            print(f"   📊 Win Rate: {win_rate:.1f}%")
+            print(f"   📈 Peak: ${portfolio_summary.get('peak_balance', 0):.2f}")
+            print(f"   📉 Drawdown: {portfolio_summary.get('drawdown', 0):.2f}%")
+        else:
+            print(f"   💰 Current Balance: ${balance:.2f}")
+        print("   ───────────────────────────────────────────────────")
+
+    @staticmethod
+    def _log_indicators_section(indicators):
+        """تسجيل قسم المؤشرات"""
+        print("📊 TECHNICAL INDICATORS:")
+        if indicators:
+            # مؤشرات الزخم
+            rsi = indicators.get('rsi', 0)
+            rsi_status = "🟢" if rsi < 30 else "🔴" if rsi > 70 else "🟡"
+            print(f"   {rsi_status} RSI: {rsi:.1f}")
+            
+            # مؤشرات الترند
+            adx = indicators.get('adx', 0)
+            plus_di = indicators.get('plus_di', 0)
+            minus_di = indicators.get('minus_di', 0)
+            adx_status = "🟢" if adx > 25 else "🔴" if adx < 15 else "🟡"
+            print(f"   {adx_status} ADX: {adx:.1f} | +DI: {plus_di:.1f} | -DI: {minus_di:.1f}")
+            
+            # MACD
+            macd = indicators.get('macd', 0)
+            macd_signal = indicators.get('macd_signal', 0)
+            macd_hist = indicators.get('macd_hist', 0)
+            macd_status = "🟢" if macd_hist > 0 else "🔴"
+            print(f"   {macd_status} MACD: {macd:.4f} | Signal: {macd_signal:.4f} | Hist: {macd_hist:.4f}")
+            
+            # التقلب والمتوسطات
+            atr = indicators.get('atr', 0)
+            sma_20 = indicators.get('sma_20', 0)
+            ema_20 = indicators.get('ema_20', 0)
+            print(f"   📈 ATR: {atr:.4f} | SMA20: {sma_20:.4f} | EMA20: {ema_20:.4f}")
+        else:
+            print("   📭 No indicator data available")
+        print("   ───────────────────────────────────────────────────")
+
+    @staticmethod
+    def _log_volatility_section(volatility_data):
+        """تسجيل قسم التذبذب"""
+        print("🛡️ VOLATILITY ANALYSIS:")
+        if volatility_data:
+            level = volatility_data.get('volatility_level', 'unknown')
+            score = volatility_data.get('volatility_score', 0)
+            color = volatility_data.get('color', '⚪')
+            recommendation = volatility_data.get('recommendation', 'UNKNOWN')
+            
+            print(f"   {color} Level: {level.upper()} (Score: {score})")
+            print(f"   📊 ATR Ratio: {volatility_data.get('atr_ratio', 0)}")
+            print(f"   💹 Price Vol: {volatility_data.get('price_volatility', 0):.2f}%")
+            print(f"   ⚠️  Recommendation: {recommendation}")
+            
+            if level in ["high", "extreme"]:
+                print(f"   🚫 TRADING SUSPENDED - High Volatility Detected")
+        else:
+            print("   📭 No volatility data available")
+        print("   ───────────────────────────────────────────────────")
+
+    @staticmethod
+    def _log_council_section(council_data):
+        """تسجيل قسم مجلس التصويت"""
+        print("🗳️ COUNCIL VOTING RESULTS:")
+        if council_data:
+            score_b = council_data.get('score_b', 0)
+            score_s = council_data.get('score_s', 0)
+            votes_b = council_data.get('b', 0)
+            votes_s = council_data.get('s', 0)
+            confidence = council_data.get('confidence', 0)
+            trade_type = council_data.get('trade_type', 'scalp')
+            
+            # تحديد الفائز
+            if score_b > score_s:
+                winner = "🟢 BUY"
+                winner_score = score_b
+            elif score_s > score_b:
+                winner = "🔴 SELL" 
+                winner_score = score_s
+            else:
+                winner = "⚪ TIE"
+                winner_score = 0
+            
+            print(f"   {winner} Signal - Score: {winner_score:.1f}")
+            print(f"   🟢 BUY: {votes_b} votes | {score_b:.1f} points")
+            print(f"   🔴 SELL: {votes_s} votes | {score_s:.1f} points")
+            print(f"   📊 Confidence: {confidence:.2f}")
+            print(f"   🎯 Trade Type: {trade_type.upper()}")
+            
+            # تحليل القرار
+            min_score = 18.0
+            min_confidence = 0.78
+            
+            if winner_score >= min_score and confidence >= min_confidence:
+                print(f"   ✅ DECISION: STRONG SIGNAL - Ready to trade")
+            else:
+                print(f"   ❌ DECISION: WEAK SIGNAL - Waiting for better opportunity")
+        else:
+            print("   📭 No council data available")
+        print("   ───────────────────────────────────────────────────")
+
+    @staticmethod
+    def _log_strategy_zones_section(council_data):
+        """تسجيل قسم المناطق الاستراتيجية"""
+        print("🎯 STRATEGY ZONES:")
+        if council_data and council_data.get('analysis'):
+            analysis = council_data['analysis']
+            
+            # مناطق العرض والطلب
+            supply_demand = analysis.get('supply_demand', {})
+            supply_zones = supply_demand.get('supply_zones', [])
+            demand_zones = supply_demand.get('demand_zones', [])
+            
+            if demand_zones:
+                print(f"   🛡️ DEMAND ZONES: {len(demand_zones)} active")
+                for zone in demand_zones[:2]:  # أول منطقتين فقط
+                    print(f"      - Price: {zone.get('price', 0):.4f} | Strength: {zone.get('strength', 0):.1f}%")
+            
+            if supply_zones:
+                print(f"   🚧 SUPPLY ZONES: {len(supply_zones)} active") 
+                for zone in supply_zones[:2]:
+                    print(f"      - Price: {zone.get('price', 0):.4f} | Strength: {zone.get('strength', 0):.1f}%")
+            
+            # SMC Analysis
+            smc = analysis.get('smc', {})
+            order_blocks = smc.get('order_blocks', 0)
+            fvgs = smc.get('fvgs', 0)
+            bos_choch = smc.get('bos_choch', {})
+            
+            print(f"   🔧 SMC ANALYSIS:")
+            print(f"      - Order Blocks: {order_blocks}")
+            print(f"      - FVGs: {fvgs}")
+            print(f"      - BOS: {'Y' if bos_choch.get('bos_bullish') or bos_choch.get('bos_bearish') else 'N'}")
+            print(f"      - CHoCH: {'Y' if bos_choch.get('choch_bullish') or bos_choch.get('choch_bearish') else 'N'}")
+            
+        else:
+            print("   📭 No strategy zones data available")
+
+    @staticmethod
+    def log_trade_signal(signal_side, current_price, position_size, council_data):
+        """تسجيل إشارة التداول"""
+        print("\n" + "⭐" * 40)
+        if signal_side == "buy":
+            print("🟢🟢🟢 BUY SIGNAL DETECTED 🟢🟢🟢")
+        else:
+            print("🔴🔴🔴 SELL SIGNAL DETECTED 🔴🔴🔴")
+        print("⭐" * 40)
+        
+        print(f"🎯 TRADE DETAILS:")
+        print(f"   Direction: {signal_side.upper()}")
+        print(f"   Entry Price: {current_price:.6f}")
+        print(f"   Position Size: {position_size:.4f}")
+        print(f"   Trade Type: {council_data.get('trade_type', 'scalp').upper()}")
+        print(f"   Confidence: {council_data.get('confidence', 0):.2f}")
+        
+        print(f"📋 ENTRY REASONS:")
+        logs = council_data.get('logs', [])
+        for i, log_msg in enumerate(logs[-8:]):  # آخر 8 أسباب
+            print(f"   {i+1}. {log_msg}")
+        
+        print("⭐" * 40 + "\n")
+
+    @staticmethod
+    def log_no_trade_reasons(council_data, volatility_data):
+        """تسجيل أسباب عدم الدخول في صفقة"""
+        print("\n" + "❌" * 30)
+        print("❌ NO TRADE - REASONS ANALYSIS ❌")
+        print("❌" * 30)
+        
+        score_b = council_data.get('score_b', 0)
+        score_s = council_data.get('score_s', 0) 
+        confidence = council_data.get('confidence', 0)
+        
+        min_score = 18.0
+        min_confidence = 0.78
+        
+        reasons = []
+        
+        # تحليل النقاط
+        if score_b < min_score and score_s < min_score:
+            reasons.append(f"Both scores below minimum ({min_score})")
+        elif max(score_b, score_s) < min_score:
+            reasons.append(f"Winning score {max(score_b, score_s):.1f} < {min_score}")
+        
+        # تحليل الثقة
+        if confidence < min_confidence:
+            reasons.append(f"Confidence {confidence:.2f} < {min_confidence}")
+        
+        # تحليل التذبذب
+        if volatility_data and volatility_detector.should_avoid_trading(volatility_data):
+            reasons.append(f"High volatility: {volatility_data.get('volatility_level')}")
+        
+        # تحليل الفارق
+        score_diff = abs(score_b - score_s)
+        if score_diff < 5:
+            reasons.append(f"Score difference too small: {score_diff:.1f}")
+        
+        # عرض الأسباب
+        if reasons:
+            print("📊 DECISION ANALYSIS:")
+            for i, reason in enumerate(reasons):
+                print(f"   {i+1}. {reason}")
+        else:
+            print("   🤔 No specific reasons identified")
+        
+        # عرض توصيات المجلس
+        logs = council_data.get('logs', [])
+        if logs:
+            print("📝 COUNCIL RECOMMENDATIONS:")
+            for i, log_msg in enumerate(logs[-5:]):
+                print(f"   • {log_msg}")
+        
+        print("❌" * 30 + "\n")
+
+    @staticmethod
+    def log_position_opened(position_data, council_data):
+        """تسجيل فتح الصفقة"""
+        side = position_data.get("side")
+        entry = position_data.get("entry")
+        qty = position_data.get("qty")
+        trade_type = position_data.get("trade_type", "scalp")
+        
+        print("\n" + "💎" * 35)
+        if side == "long":
+            print("💎💎💎 BUY POSITION OPENED 💎💎💎")
+            color_icon = "🟢"
+        else:
+            print("💎💎💎 SELL POSITION OPENED 💎💎💎") 
+            color_icon = "🔴"
+        print("💎" * 35)
+        
+        print(f"{color_icon} POSITION DETAILS:")
+        print(f"   Direction: {side.upper()}")
+        print(f"   Entry Price: {entry:.6f}")
+        print(f"   Quantity: {qty:.4f}")
+        print(f"   Trade Type: {trade_type.upper()}")
+        print(f"   Leverage: {LEVERAGE}x")
+        
+        # أهداف الربح
+        if position_data.get("profit_targets"):
+            print(f"🎯 PROFIT TARGETS:")
+            for target in position_data["profit_targets"][:3]:  # أول 3 أهداف
+                print(f"   TP{target['level']}: {target['price']:.6f} ({target['target_pct']:.1f}%)")
+        
+        print(f"📊 ENTRY ANALYSIS:")
+        logs = council_data.get('logs', [])
+        for i, log_msg in enumerate(logs[-6:]):
+            print(f"   {i+1}. {log_msg}")
+        
+        print("💎" * 35 + "\n")
+
+# إنشاء الكائن
+trading_logger = ProfessionalTradingLogger()
+
 # =================== ENV / MODE ===================
 EXCHANGE_NAME = os.getenv("EXCHANGE", "bingx").lower()
 
@@ -413,7 +718,7 @@ SHADOW_MODE_DASHBOARD = False
 DRY_RUN = False
 
 # ==== Addon: Logging + Recovery Settings ====
-BOT_VERSION = f"SUI ULTRA PRO AI v10.0 — {EXCHANGE_NAME.upper()} - VOLATILITY GUARD"
+BOT_VERSION = f"SUI ULTRA PRO AI v10.0 — {EXCHANGE_NAME.upper()} - PROFESSIONAL LOGGER"
 print("🚀 Booting:", BOT_VERSION, flush=True)
 
 STATE_PATH = "./bot_state.json"
@@ -1459,40 +1764,6 @@ def golden_zone_check(df, indicators):
     except Exception as e:
         return {'ok': False, 'score': 0}
 
-# =================== ENHANCED LOGGING WITH INDICATORS AND PORTFOLIO ===================
-def log_detailed_indicators(indicators, volatility_data, portfolio_summary):
-    """تسجيل مفصل للمؤشرات والمحفظة"""
-    try:
-        if not indicators:
-            return
-        
-        log_v("📊 DETAILED TECHNICAL INDICATORS:")
-        log_v(f"   RSI: {indicators.get('rsi', 0):.1f} | MA: {indicators.get('rsi_ma', 0):.1f}")
-        log_v(f"   ADX: {indicators.get('adx', 0):.1f} | +DI: {indicators.get('plus_di', 0):.1f} | -DI: {indicators.get('minus_di', 0):.1f}")
-        log_v(f"   MACD: {indicators.get('macd', 0):.4f} | Signal: {indicators.get('macd_signal', 0):.4f} | Hist: {indicators.get('macd_hist', 0):.4f}")
-        log_v(f"   ATR: {indicators.get('atr', 0):.4f} | SMA20: {indicators.get('sma_20', 0):.4f} | EMA20: {indicators.get('ema_20', 0):.4f}")
-        
-        # تسجيل بيانات التذبذب
-        if volatility_data:
-            color = volatility_data.get('color', '⚪')
-            level = volatility_data.get('volatility_level', 'unknown')
-            score = volatility_data.get('volatility_score', 0)
-            log_v(f"   {color} VOLATILITY: {level.upper()} (Score: {score})")
-            if level in ["high", "extreme"]:
-                log_v(f"   📈 ATR Ratio: {volatility_data.get('atr_ratio', 0)} | Price Vol: {volatility_data.get('price_volatility', 0):.2f}%")
-                log_v(f"   ⚠️  Recommendation: {volatility_data.get('recommendation', 'UNKNOWN')}")
-        
-        # تسجيل بيانات المحفظة
-        if portfolio_summary:
-            log_p("💰 PORTFOLIO SUMMARY:")
-            log_p(f"   Balance: ${portfolio_summary.get('current_balance', 0):.2f} | Today: ${portfolio_summary.get('daily_profit', 0):.2f} ({portfolio_summary.get('daily_return', 0):.2f}%)")
-            log_p(f"   Total PnL: ${portfolio_summary.get('total_profit', 0):.2f} ({portfolio_summary.get('total_return', 0):.2f}%)")
-            log_p(f"   Win Rate: {portfolio_summary.get('win_rate', 0):.1f}% | Trades: {portfolio_summary.get('total_trades', 0)}")
-            log_p(f"   Drawdown: {portfolio_summary.get('drawdown', 0):.2f}% | Peak: ${portfolio_summary.get('peak_balance', 0):.2f}")
-            
-    except Exception as e:
-        log_w(f"Detailed logging error: {e}")
-
 # =================== ULTRA PROFESSIONAL COUNCIL AI ===================
 def ultra_professional_council_ai(df):
     """
@@ -2166,10 +2437,9 @@ def close_market_strict(reason=""):
 
 # =================== PROFESSIONAL TRADING LOOP ===================
 def professional_trading_loop():
-    """الحلقة الرئيسية للتداول المحترف"""
-    global wait_for_next_signal_side
+    """الحلقة الرئيسية للتداول المحترف مع التسجيل المحسن"""
     
-    log_banner("STARTING ULTIMATE PROFESSIONAL TRADING BOT - VOLATILITY GUARD ACTIVE")
+    log_banner("STARTING ULTIMATE PROFESSIONAL TRADING BOT - PROFESSIONAL LOGGER")
     log_i(f"🤖 Bot Version: {BOT_VERSION}")
     log_i(f"💱 Exchange: {EXCHANGE_NAME.upper()}")
     log_i(f"📈 Symbol: {SYMBOL}")
@@ -2178,6 +2448,7 @@ def professional_trading_loop():
     log_i(f"📊 Risk Allocation: {RISK_ALLOC*100}%")
     log_i(f"🎯 Indicators: TradingView/Bybit Precision Mode")
     log_i(f"🛡️ Volatility Protection: {'ACTIVE' if VOLATILITY_PROTECTION else 'INACTIVE'}")
+    log_i(f"📝 Professional Logger: ACTIVE")
     
     # عرض إحصائيات البداية
     performance = pro_trade_manager.analyze_trade_performance()
@@ -2201,39 +2472,20 @@ def professional_trading_loop():
             
             # قرار مجلس الإدارة المحترف
             council_data = ultra_professional_council_ai(df)
+            volatility_data = council_data.get('analysis', {}).get('volatility', {})
             
             # تحديث الحالة
             STATE["last_council"] = council_data
             STATE["last_ind"] = council_data.get("indicators", {})
             STATE["last_spread_bps"] = orderbook_spread_bps()
             
-            # عرض معلومات السوق المحترفة
-            if LOG_ADDONS:
-                log_i(f"🏪 MARKET ANALYSIS:")
-                log_i(f"   Phase: {council_data.get('analysis', {}).get('price_testing', {}).get('breakout_strength', 'neutral').upper()}")
-                log_i(f"   Trade Type: {council_data.get('trade_type', 'scalp').upper()}")
-                log_i(f"   Confidence: {council_data['confidence']:.2f}")
-                
-                log_i(f"🎯 COUNCIL DECISION:")
-                log_i(f"   Votes: B{council_data['b']}/S{council_data['s']}")
-                log_i(f"   Scores: {council_data['score_b']:.1f}/{council_data['score_s']:.1f}")
-                
-                # عرض تحليل SMC
-                smc_info = council_data.get('analysis', {}).get('smc', {})
-                log_i(f"🔧 SMC ANALYSIS:")
-                log_i(f"   Order Blocks: {smc_info.get('order_blocks', 0)}")
-                log_i(f"   FVGs: {smc_info.get('fvgs', 0)}")
-                log_i(f"   BOS: {'Y' if smc_info.get('bos_choch', {}).get('bos_bullish') or smc_info.get('bos_choch', {}).get('bos_bearish') else 'N'}")
-                log_i(f"   CHoCH: {'Y' if smc_info.get('bos_choch', {}).get('choch_bullish') or smc_info.get('bos_choch', {}).get('choch_bearish') else 'N'}")
-                
-                # عرض أهم أسباب القرار
-                log_i(f"📋 KEY REASONS:")
-                for i, log_msg in enumerate(council_data.get("logs", [])[-5:]):
-                    log_i(f"   {i+1}. {log_msg}")
-            
-            # تسجيل المؤشرات والمحفظة المفصلة
-            volatility_data = council_data.get('analysis', {}).get('volatility', {})
-            log_detailed_indicators(council_data.get("indicators", {}), volatility_data, portfolio_summary)
+            # ✅ التسجيل المحترف لجلسة التداول
+            trading_logger.log_trading_session(
+                balance, portfolio_summary, 
+                council_data.get("indicators", {}), 
+                volatility_data, council_data, 
+                STATE["open"]
+            )
             
             # إدارة المركز المفتوح
             if STATE["open"]:
@@ -2247,26 +2499,23 @@ def professional_trading_loop():
                 
                 # فحص الحماية من التذبذب أولاً
                 if council_data.get("volatility_alert"):
-                    log_w(f"🚫 VOLATILITY PROTECTION: Trading suspended due to {volatility_data.get('volatility_level', 'high')} volatility")
-                    time.sleep(BASE_SLEEP * 2)  # انتظار أطول في أوقات التذبذب
+                    log_w(f"🚫 VOLATILITY PROTECTION: Trading suspended")
+                    time.sleep(BASE_SLEEP * 2)
                     continue
                 
-                # شروط دخول محترفة - عتبات عالية للجودة
-                min_score = 18.0  # حد أدنى عالي للجودة
-                min_confidence = 0.78  # ثقة عالية جداً
+                # شروط دخول محترفة
+                min_score = 18.0
+                min_confidence = 0.78
                 
                 if (council_data["score_b"] > council_data["score_s"] and 
                     council_data["score_b"] >= min_score and 
                     council_data["confidence"] >= min_confidence):
                     signal_side = "buy"
-                    signal_reason = f"PROFESSIONAL BUY (Score: {council_data['score_b']:.1f}, Confidence: {council_data['confidence']:.2f})"
                 elif (council_data["score_s"] > council_data["score_b"] and 
                       council_data["score_s"] >= min_score and 
                       council_data["confidence"] >= min_confidence):
                     signal_side = "sell"
-                    signal_reason = f"PROFESSIONAL SELL (Score: {council_data['score_s']:.1f}, Confidence: {council_data['confidence']:.2f})"
                 
-                # فتح الصفقة إذا كانت الإشارة قوية جداً
                 if signal_side:
                     position_size = compute_adaptive_position_size(
                         balance, current_price, council_data["confidence"], 
@@ -2274,13 +2523,10 @@ def professional_trading_loop():
                     )
                     
                     if position_size > 0:
-                        log_i(f"🎯 PROFESSIONAL TRADE SIGNAL DETECTED:")
-                        log_i(f"   Direction: {signal_side.upper()}")
-                        log_i(f"   Type: {council_data.get('trade_type', 'scalp').upper()}")
-                        log_i(f"   Size: {position_size:.4f}")
-                        log_i(f"   Price: {current_price:.6f}")
-                        log_i(f"   Confidence: {council_data['confidence']:.2f}")
-                        log_i(f"   Reason: {signal_reason}")
+                        # ✅ تسجيل إشارة التداول
+                        trading_logger.log_trade_signal(
+                            signal_side, current_price, position_size, council_data
+                        )
                         
                         success = execute_professional_trade(
                             signal_side, current_price, position_size, council_data, {
@@ -2305,12 +2551,15 @@ def professional_trading_loop():
                                 "entry_reason": signal_reason
                             })
                             
-                            # حساب أهداف الربح الديناميكية
+                            # حساب أهداف الربح
                             atr = council_data.get('indicators', {}).get('atr', 0) or 0.001
                             market_strength = "strong" if council_data.get('analysis', {}).get('price_testing', {}).get('breakout_strength') == 'strong' else "normal"
                             STATE["profit_targets"] = profit_manager.calculate_dynamic_tps(
                                 STATE["trade_type"], atr, current_price, STATE["side"], market_strength
                             )
+                            
+                            # ✅ تسجيل فتح الصفقة
+                            trading_logger.log_position_opened(STATE, council_data)
                             
                             save_state({
                                 "in_position": True,
@@ -2321,8 +2570,9 @@ def professional_trading_loop():
                                 "trade_type": STATE["trade_type"],
                                 "entry_reason": signal_reason
                             })
-                            
-                            print_position_snapshot("PROFESSIONAL_OPEN")
+                else:
+                    # ✅ تسجيل أسباب عدم الدخول
+                    trading_logger.log_no_trade_reasons(council_data, volatility_data)
             
             # الانتظار للدورة التالية
             sleep_time = NEAR_CLOSE_S if time_to_candle_close(df) <= 10 else BASE_SLEEP
@@ -2352,7 +2602,7 @@ def home():
     <html>
         <head><title>SUI ULTRA PRO AI BOT</title></head>
         <body>
-            <h1>🚀 SUI ULTRA PRO AI BOT - الإصدار المحترف مع مؤشرات TradingView</h1>
+            <h1>🚀 SUI ULTRA PRO AI BOT - الإصدار المحترف مع نظام التسجيل المتكامل</h1>
             <p><strong>Version:</strong> {BOT_VERSION}</p>
             <p><strong>Exchange:</strong> {EXCHANGE_NAME.upper()}</p>
             <p><strong>Symbol:</strong> {SYMBOL}</p>
@@ -2360,6 +2610,7 @@ def home():
             <p><strong>Position:</strong> {'🟢 OPEN' if STATE['open'] else '🔴 CLOSED'}</p>
             <p><strong>Indicators:</strong> TradingView/Bybit Precision Mode</p>
             <p><strong>Volatility Protection:</strong> {'🟢 ACTIVE' if VOLATILITY_PROTECTION else '🔴 INACTIVE'}</p>
+            <p><strong>Professional Logger:</strong> 🟢 ACTIVE</p>
             <h2>Portfolio Summary</h2>
             <p><strong>Current Balance:</strong> ${portfolio_summary.get('current_balance', 0) if portfolio_summary else 'N/A'}</p>
             <p><strong>Total Profit:</strong> ${portfolio_summary.get('total_profit', 0) if portfolio_summary else 'N/A'}</p>
@@ -2377,7 +2628,8 @@ def health():
         "symbol": SYMBOL,
         "position_open": STATE["open"],
         "indicators_mode": "TradingView Precision",
-        "volatility_protection": VOLATILITY_PROTECTION
+        "volatility_protection": VOLATILITY_PROTECTION,
+        "professional_logger": True
     })
 
 @app.route("/performance")
@@ -2398,7 +2650,7 @@ def volatility_status():
 # =================== STARTUP ===================
 def startup_sequence():
     """تسلسل بدء التشغيل"""
-    log_banner("PROFESSIONAL SYSTEM INITIALIZATION - VOLATILITY GUARD ACTIVE")
+    log_banner("PROFESSIONAL SYSTEM INITIALIZATION - PROFESSIONAL LOGGER ACTIVE")
     
     # تحميل الحالة السابقة
     loaded_state = load_state()
@@ -2443,7 +2695,7 @@ def startup_sequence():
     except Exception as e:
         log_w(f"Volatility detector test failed: {e}")
     
-    log_g("🚀 ULTIMATE PROFESSIONAL TRADING BOT READY! - VOLATILITY GUARD ACTIVE")
+    log_g("🚀 ULTIMATE PROFESSIONAL TRADING BOT READY! - PROFESSIONAL LOGGER ACTIVE")
     return True
 
 # =================== MAIN EXECUTION ===================
