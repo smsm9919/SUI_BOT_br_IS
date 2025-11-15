@@ -745,7 +745,7 @@ CVD_SMOOTH = 8
 # =================== SETTINGS ===================
 SYMBOL     = os.getenv("SYMBOL", "SUI/USDT:USDT")
 INTERVAL   = os.getenv("INTERVAL", "15m")
-LEVERAGE   = int(os.getenv("LEVERAGE", 10))
+LEVERAGE   = int(os.getenv("LEVERAGE", 15))
 RISK_ALLOC = float(os.getenv("RISK_ALLOC", 0.60))
 POSITION_MODE = os.getenv("POSITION_MODE", "oneway")
 
