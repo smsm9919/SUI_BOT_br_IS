@@ -11,6 +11,8 @@ SUI ULTRA PRO AI BOT - الإصدار الذكي المحترف المتكامل
 • نظام كشف التذبذب المتقدم
 • نظام التسجيل المحترف المتكامل
 • نظام توفير الموارد المحسن
+• نظام إدارة التكاليف والربحية المحترف
+• نظام السكالب الآمن عالي الثقة
 """
 
 import os, time, math, random, signal, sys, traceback, logging, json, gc
@@ -34,6 +36,16 @@ MIN_CANDLES = 180           # 🔽 أقل عدد شموع للمؤشرات (كا
 BASE_SLEEP = 12             # 🔽 زيادة فترة الانتظار (كان 5)
 NEAR_CLOSE_S = 3            # 🔽 زيادة قليلاً near close (كان 1)
 MAX_LOOP_FREQUENCY = 18     # 🔽 أقصى تردد للمسح (ثانية)
+
+# =================== EXCHANGE FEES & SCALP PROFITABILITY ===================
+TAKER_FEE_RATE = 0.0006      # 0.06% لكل عملية
+SCALP_EXTRA_NET_PCT = 0.003  # 0.30% ربح صافي فوق الفيز
+MIN_SCALP_PROFIT_PCT = 2 * TAKER_FEE_RATE + SCALP_EXTRA_NET_PCT  # 0.42% أدنى هدف
+
+# =================== ENHANCED SCALP SECURITY ===================
+SCALP_HIGH_CONFIDENCE_THRESHOLD = 0.85  # ثقة 85% كحد أدنى للسكالب
+SCALP_MIN_SCORE_ENHANCED = 22.0         # نقاط أعلى للسكالب
+SCALP_CONFIRMATION_SIGNALS_REQUIRED = 4  # عدد المؤشرات المؤكدة المطلوبة
 
 # ====== POSITION SIZING CONFIG ======
 # أقل كمية وخطوة تقريب لكل رمز (مظبوط لـ SUI)
@@ -605,8 +617,8 @@ class ProfessionalTradingLogger:
             print("   📭 No strategy zones data available")
 
     @staticmethod
-    def log_trade_signal(signal_side, current_price, position_size, council_data):
-        """تسجيل إشارة التداول"""
+    def log_trade_signal(signal_side, current_price, position_size, council_data, target_price=None):
+        """تسجيل إشارة التداول مع تحليل الربحية"""
         print("\n" + "⭐" * 40)
         if signal_side == "buy":
             print("🟢🟢🟢 BUY SIGNAL DETECTED 🟢🟢🟢")
@@ -620,6 +632,18 @@ class ProfessionalTradingLogger:
         print(f"   Position Size: {position_size:.4f}")
         print(f"   Trade Type: {council_data.get('trade_type', 'scalp').upper()}")
         print(f"   Confidence: {council_data.get('confidence', 0):.2f}")
+        
+        # 🔼 إضافة تحليل الربحية للسكالب
+        if council_data.get('trade_type') == 'scalp' and target_price:
+            is_profitable, gross_pct, min_required = is_scalp_profitable_enough(
+                current_price, target_price, signal_side
+            )
+            print(f"💰 PROFITABILITY ANALYSIS:")
+            print(f"   Target Price: {target_price:.6f}")
+            print(f"   Gross PnL: {gross_pct*100:.3f}%")
+            print(f"   Required: {min_required*100:.3f}%")
+            print(f"   Net PnL: {(gross_pct - (2 * TAKER_FEE_RATE))*100:.3f}%")
+            print(f"   Status: {'🟢 PROFITABLE' if is_profitable else '🔴 UNPROFITABLE'}")
         
         print(f"📋 ENTRY REASONS:")
         logs = council_data.get('logs', [])
@@ -720,6 +744,39 @@ class ProfessionalTradingLogger:
 # إنشاء الكائن
 trading_logger = ProfessionalTradingLogger()
 
+# =================== ENHANCED SCALP LOGGER ===================
+class EnhancedTradingLogger:
+    """نظام تسجيل محسن مع تفاصيل السكالب"""
+    
+    @staticmethod
+    def log_enhanced_scalp_analysis(council_data: dict, approval_reasons: list, profitability_data: tuple):
+        """تسجيل تحليل السكالب المحسن"""
+        print("\n" + "🔍" * 50)
+        print("🔍 ENHANCED SCALP ANALYSIS")
+        print("🔍" * 50)
+        
+        is_profitable, gross_pct, min_required = profitability_data
+        
+        print(f"💰 PROFITABILITY CHECK:")
+        print(f"   Gross PnL: {gross_pct*100:.3f}%")
+        print(f"   Required: {min_required*100:.3f}%")
+        print(f"   Status: {'🟢 PASS' if is_profitable else '🔴 FAIL'}")
+        
+        print(f"🎯 ENHANCED APPROVAL:")
+        for reason in approval_reasons:
+            if "✅" in reason or "🎯" in reason:
+                print(f"   {reason}")
+            elif "❌" in reason or "🚫" in reason:
+                print(f"   {reason}")
+        
+        print(f"📊 COUNCIL METRICS:")
+        print(f"   Confidence: {council_data.get('confidence', 0):.2f}")
+        print(f"   Buy Score: {council_data.get('score_b', 0):.1f}")
+        print(f"   Sell Score: {council_data.get('score_s', 0):.1f}")
+        print(f"   Required: {SCALP_HIGH_CONFIDENCE_THRESHOLD} confidence, {SCALP_MIN_SCORE_ENHANCED} score")
+        
+        print("🔍" * 50)
+
 # =================== ENV / MODE ===================
 EXCHANGE_NAME = os.getenv("EXCHANGE", "bingx").lower()
 
@@ -744,7 +801,7 @@ SHADOW_MODE_DASHBOARD = False
 DRY_RUN = False
 
 # ==== Addon: Logging + Recovery Settings ====
-BOT_VERSION = f"SUI ULTRA PRO AI v10.0 — {EXCHANGE_NAME.upper()} - PROFESSIONAL LOGGER + RESOURCE SAVER"
+BOT_VERSION = f"SUI ULTRA PRO AI v11.0 — {EXCHANGE_NAME.upper()} - ENHANCED SCALP SECURITY + RESOURCE SAVER"
 print("🚀 Booting:", BOT_VERSION, flush=True)
 
 STATE_PATH = "./bot_state.json"
@@ -857,16 +914,18 @@ VOLATILITY_COOLDOWN_MIN = 10
 # ===== SUPER SCALP ENGINE =====
 SCALP_MODE            = True
 SCALP_EXECUTE         = True
-SCALP_SIZE_FACTOR     = 0.35
-SCALP_ADX_GATE        = 12.0
-SCALP_MIN_SCORE       = 3.5
+SCALP_SIZE_FACTOR     = 0.25  # تخفيض حجم السكالب لزيادة الأمان
+SCALP_ADX_GATE        = 15.0  # أعلى قليلاً للسكالب المحسن
+SCALP_MIN_SCORE       = 4.5   # أعلى للسكالب العادي
 SCALP_IMB_THRESHOLD   = 1.00
 SCALP_VOL_MA_FACTOR   = 1.20
 SCALP_COOLDOWN_SEC    = 8
 SCALP_RESPECT_WAIT    = False
-SCALP_TP_SINGLE_PCT   = 0.35
-SCALP_BE_AFTER_PCT    = 0.15
-SCALP_ATR_TRAIL_MULT  = 1.0
+
+# 🔼 تحديث أهداف السكالب لضمان الربحية بعد العمولة
+SCALP_TP_SINGLE_PCT = MIN_SCALP_PROFIT_PCT + 0.002  # 0.62% بدلاً من 0.52%
+SCALP_BE_AFTER_PCT = 0.0015  # 0.15% نقطة التعادل بعد العمولة
+SCALP_ATR_TRAIL_MULT = 1.0
 
 # ===== SUPER COUNCIL ENHANCEMENTS =====
 COUNCIL_AI_MODE = True
@@ -1846,6 +1905,293 @@ def optimize_memory():
     if RESOURCE_SAVER_MODE:
         gc.collect()  # تشغيل جامع القمامة
 
+# =================== PROFITABILITY & SCALP ENHANCEMENTS ===================
+def is_scalp_profitable_enough(entry_price: float, target_price: float, side: str) -> tuple[bool, float, float]:
+    """
+    ترجع:
+    - هل الصفقة تستاهل ولا لأ
+    - gross_pct: نسبة الحركة من غير خصم الفيز
+    - min_required_pct: الحد الأدنى المطلوب (فيز + ربح صافي)
+    """
+    if side == "buy":
+        gross_pct = (target_price - entry_price) / entry_price
+    else:  # sell
+        gross_pct = (entry_price - target_price) / entry_price
+
+    # عمولة دخول + خروج
+    fees_roundtrip_pct = 2 * TAKER_FEE_RATE
+
+    # أقل نسبة مطلوبة: الفيز + ربح صافي
+    min_required_pct = fees_roundtrip_pct + SCALP_EXTRA_NET_PCT
+
+    is_ok = gross_pct >= min_required_pct
+    return is_ok, gross_pct, min_required_pct
+
+def calculate_scalp_target_price(entry_price: float, side: str, profit_pct: float = None):
+    """حساب سعر الهدف للسكالب مع ضمان الربحية"""
+    if profit_pct is None:
+        profit_pct = MIN_SCALP_PROFIT_PCT  # استخدام الحد الأدنى أو قيمة مخصصة
+    
+    if side == "buy":
+        return entry_price * (1 + profit_pct)
+    else:  # sell
+        return entry_price * (1 - profit_pct)
+
+def log_trade_economics(entry_price: float, exit_price: float, side: str, trade_type: str):
+    """تسجيل الاقتصاديات الكاملة للصفقة"""
+    if side == "buy":
+        gross_pct = (exit_price - entry_price) / entry_price
+    else:
+        gross_pct = (entry_price - exit_price) / entry_price
+    
+    fees_roundtrip_pct = 2 * TAKER_FEE_RATE
+    net_pct = gross_pct - fees_roundtrip_pct
+    
+    log_i(f"📊 TRADE ECONOMICS [{trade_type.upper()}]:")
+    log_i(f"   Gross PnL: {gross_pct*100:.3f}%")
+    log_i(f"   Fees (Round-trip): {fees_roundtrip_pct*100:.3f}%")
+    log_i(f"   Net PnL: {net_pct*100:.3f}%")
+    log_i(f"   Profitability: {'🟢 POSITIVE' if net_pct > 0 else '🔴 NEGATIVE'}")
+    
+    return net_pct
+
+def check_instant_momentum(df: pd.DataFrame, indicators: dict) -> bool:
+    """التحقق من زخم فوري قوي للسكالب"""
+    try:
+        if len(df) < 10:
+            return False
+        
+        # تحليل آخر 3 شموع
+        recent_closes = df['close'].astype(float).tail(3)
+        recent_highs = df['high'].astype(float).tail(3)
+        recent_lows = df['low'].astype(float).tail(3)
+        
+        # اتجاه قوي في الشموع الأخيرة
+        if all(recent_closes.iloc[i] > recent_closes.iloc[i-1] for i in range(1, 3)):
+            return True
+        if all(recent_closes.iloc[i] < recent_closes.iloc[i-1] for i in range(1, 3)):
+            return True
+        
+        # تحليل RSI للزخم
+        rsi = indicators.get('rsi', 50)
+        if (rsi < 25 or rsi > 75) and indicators.get('adx', 0) > 20:
+            return True
+        
+        return False
+    except Exception:
+        return False
+
+def check_scalp_orderbook() -> bool:
+    """التحقق من كتاب الطلبات المناسب للسكالب"""
+    try:
+        orderbook = bookmap_snapshot(ex, SYMBOL, depth=10)
+        if not orderbook.get('ok'):
+            return True  # إذا فشل الحصول على الكتاب، نعتبره مقبولاً
+        
+        imbalance = orderbook.get('imbalance', 1.0)
+        
+        # كتاب طلبات متوازن نسبياً (ليس متطرفاً)
+        return 0.5 <= imbalance <= 2.0
+    except Exception:
+        return True
+
+def check_scalp_volatility(df: pd.DataFrame) -> bool:
+    """التحقق من التذبذب المناسب للسكالب"""
+    try:
+        if len(df) < 20:
+            return True
+        
+        close = df['close'].astype(float)
+        atr = tv.tv_atr(df['high'].astype(float), df['low'].astype(float), close, 14)
+        current_atr = atr.iloc[-1]
+        avg_atr = atr.tail(20).mean()
+        
+        atr_ratio = current_atr / avg_atr if avg_atr > 0 else 1.0
+        
+        # تذبذب معتدل (ليس منخفض جداً ولا عالي جداً)
+        return 0.7 <= atr_ratio <= 1.8
+    except Exception:
+        return True
+
+def check_trend_alignment(council_data: dict) -> bool:
+    """التحقق من محاذاة السكالب مع الترند الرئيسي"""
+    try:
+        indicators = council_data.get('indicators', {})
+        plus_di = indicators.get('plus_di', 0)
+        minus_di = indicators.get('minus_di', 0)
+        adx = indicators.get('adx', 0)
+        
+        # إذا كان ADX مرتفع، تأكد من محاذاة الاتجاه
+        if adx > 25:
+            if council_data.get('score_b', 0) > council_data.get('score_s', 0):
+                return plus_di > minus_di  # شراء مع ترند صاعد
+            else:
+                return minus_di > plus_di  # بيع مع ترند هابط
+        
+        return True  # إذا كان السوق جانبي، فجميع الصفقات مقبولة
+    except Exception:
+        return True
+
+def enhanced_scalp_approval(council_data: dict, current_price: float, df: pd.DataFrame) -> tuple[bool, list]:
+    """
+    موافقة محسنة للسكالب - تتطلب تأكيدات متعددة وثقة عالية
+    """
+    reasons = []
+    confirmation_signals = 0
+    
+    indicators = council_data.get('indicators', {})
+    analysis = council_data.get('analysis', {})
+    
+    # 1. التحقق من عتبة الثقة العالية
+    if council_data.get('confidence', 0) >= SCALP_HIGH_CONFIDENCE_THRESHOLD:
+        confirmation_signals += 1
+        reasons.append(f"✅ Confidence: {council_data['confidence']:.2f} >= {SCALP_HIGH_CONFIDENCE_THRESHOLD}")
+    else:
+        reasons.append(f"❌ Low confidence: {council_data.get('confidence', 0):.2f} < {SCALP_HIGH_CONFIDENCE_THRESHOLD}")
+    
+    # 2. التحقق من نقاط المجلس العالية
+    winning_score = max(council_data.get('score_b', 0), council_data.get('score_s', 0))
+    if winning_score >= SCALP_MIN_SCORE_ENHANCED:
+        confirmation_signals += 1
+        reasons.append(f"✅ Council score: {winning_score:.1f} >= {SCALP_MIN_SCORE_ENHANCED}")
+    else:
+        reasons.append(f"❌ Low council score: {winning_score:.1f} < {SCALP_MIN_SCORE_ENHANCED}")
+    
+    # 3. تحليل الزخم الفوري
+    momentum_ok = check_instant_momentum(df, indicators)
+    if momentum_ok:
+        confirmation_signals += 1
+        reasons.append("✅ Strong instant momentum")
+    else:
+        reasons.append("❌ Weak instant momentum")
+    
+    # 4. تحليل كتاب الطلبات للسكالب
+    orderbook_ok = check_scalp_orderbook()
+    if orderbook_ok:
+        confirmation_signals += 1
+        reasons.append("✅ Favorable orderbook for scalp")
+    else:
+        reasons.append("❌ Unfavorable orderbook for scalp")
+    
+    # 5. تحليل التذبذب المناسب للسكالب
+    volatility_ok = check_scalp_volatility(df)
+    if volatility_ok:
+        confirmation_signals += 1
+        reasons.append("✅ Optimal volatility for scalp")
+    else:
+        reasons.append("❌ Suboptimal volatility for scalp")
+    
+    # 6. تحليل اتجاه السوق العام
+    trend_alignment = check_trend_alignment(council_data)
+    if trend_alignment:
+        confirmation_signals += 1
+        reasons.append("✅ Aligned with main trend")
+    else:
+        reasons.append("❌ Against main trend")
+    
+    approved = confirmation_signals >= SCALP_CONFIRMATION_SIGNALS_REQUIRED
+    
+    if approved:
+        reasons.append(f"🎯 SCALP APPROVED: {confirmation_signals}/{SCALP_CONFIRMATION_SIGNALS_REQUIRED} signals confirmed")
+    else:
+        reasons.append(f"🚫 SCALP REJECTED: {confirmation_signals}/{SCALP_CONFIRMATION_SIGNALS_REQUIRED} signals confirmed")
+    
+    return approved, reasons
+
+def execute_enhanced_scalp_trade(side: str, current_price: float, council_data: dict, balance: float, df: pd.DataFrame) -> bool:
+    """تنفيذ سكالب محسن مع تحقق متعدد المراحل"""
+    
+    # 🔼 المرحلة 1: التحقق من الربحية الأساسية
+    target_price = calculate_scalp_target_price(current_price, side, SCALP_TP_SINGLE_PCT)
+    is_profitable, gross_pct, min_required = is_scalp_profitable_enough(
+        current_price, target_price, side
+    )
+    
+    if not is_profitable:
+        log_w(f"🚫 SCALP REJECTED - Not profitable:")
+        log_w(f"   Gross: {gross_pct*100:.3f}% < Required: {min_required*100:.3f}%")
+        return False
+    
+    # 🔼 المرحلة 2: الموافقة المحسنة للسكالب
+    approved, approval_reasons = enhanced_scalp_approval(council_data, current_price, df)
+    
+    if not approved:
+        log_w(f"🚫 SCALP REJECTED - Failed enhanced approval:")
+        for reason in approval_reasons:
+            if "❌" in reason or "🚫" in reason:
+                log_w(f"   {reason}")
+        return False
+    
+    # 🔼 المرحلة 3: تسجيل أسباب الموافقة
+    log_g(f"✅ ENHANCED SCALP APPROVAL GRANTED:")
+    for reason in approval_reasons:
+        if "✅" in reason or "🎯" in reason:
+            log_g(f"   {reason}")
+    
+    # 🔼 المرحلة 4: حساب الحجم والتنفيذ
+    position_size = compute_adaptive_position_size(
+        balance, current_price, council_data["confidence"], "scalp"
+    )
+    
+    if position_size <= 0:
+        return False
+    
+    # تنفيذ الصفقة
+    success = execute_professional_trade(
+        side, current_price, position_size, council_data, {
+            "market_phase": "enhanced_scalp",
+            "target_price": target_price,
+            "expected_net_pct": gross_pct - (2 * TAKER_FEE_RATE),
+            "approval_signals": len([r for r in approval_reasons if "✅" in r])
+        }
+    )
+    
+    if success:
+        log_g(f"🎯 ENHANCED SCALP EXECUTED:")
+        log_g(f"   Entry: {current_price:.6f}")
+        log_g(f"   Target: {target_price:.6f}")
+        log_g(f"   Expected Net: {(gross_pct - (2 * TAKER_FEE_RATE))*100:.3f}%")
+        log_g(f"   Confidence: {council_data.get('confidence', 0):.2f}")
+        
+        # تعيين بيانات السكالب المحسن في الحالة
+        STATE.update({
+            "scalp_target": target_price,
+            "min_required_pct": min_required,
+            "expected_gross_pct": gross_pct,
+            "enhanced_scalp": True,
+            "approval_reasons": approval_reasons
+        })
+    
+    return success
+
+def emergency_scalp_safety_check() -> bool:
+    """فحص طوارئ لظروف السوق الخطيرة"""
+    try:
+        # إذا كان السكالب مفتوحاً وتحولت الظروف لخطيرة، أغلق فوراً
+        if STATE.get("open") and STATE.get("trade_type") == "scalp":
+            df = fetch_ohlcv(limit=50)
+            volatility_data = volatility_detector.calculate_volatility_metrics(df)
+            
+            # إغلاق طارئ إذا كان التذبذب عالي جداً
+            if volatility_data.get('volatility_level') in ['extreme', 'high']:
+                log_e("🚨 EMERGENCY SCALP CLOSE - High volatility detected!")
+                close_market_strict("emergency_volatility")
+                return False
+            
+            # إغلاق طارئ إذا كان الخسارة تتجاوز حد معين
+            current_price = price_now()
+            if current_price and STATE.get("entry"):
+                pnl_pct = abs((current_price - STATE["entry"]) / STATE["entry"] * 100)
+                if pnl_pct > 2.0:  # إذا تجاوزت الخسارة 2%
+                    log_e(f"🚨 EMERGENCY SCALP CLOSE - Large loss: {pnl_pct:.2f}%")
+                    close_market_strict("emergency_loss")
+                    return False
+        
+        return True
+    except Exception as e:
+        log_w(f"Emergency safety check failed: {e}")
+        return True
+
 # =================== ULTRA PROFESSIONAL COUNCIL AI ===================
 def ultra_professional_council_ai(df):
     """
@@ -2481,6 +2827,9 @@ def close_market_strict(reason=""):
         else:
             profit = 0.0
 
+        # تسجيل الاقتصاديات
+        net_pct = log_trade_economics(entry_price, current_price, side, STATE.get("trade_type", "unknown"))
+
         # تسجيل الصفقة المغلقة
         pro_trade_manager.record_trade(
             side=side,
@@ -2489,7 +2838,7 @@ def close_market_strict(reason=""):
             quantity=qty,
             profit=profit,
             duration=0,
-            reason=f"CLOSED: {reason}"
+            reason=f"CLOSED: {reason} | Net PnL: {net_pct*100:.3f}%"
         )
 
         # إعادة تعيين الحالة
@@ -2498,14 +2847,17 @@ def close_market_strict(reason=""):
             "pnl": 0.0, "bars": 0, "trail": None, "breakeven": None,
             "tp1_done": False, "highest_profit_pct": 0.0,
             "profit_targets_achieved": 0, "trail_active": False,
-            "trade_type": None, "profit_targets": []
+            "trade_type": None, "profit_targets": [],
+            "scalp_target": None, "min_required_pct": None, "expected_gross_pct": None,
+            "enhanced_scalp": False, "approval_reasons": None
         })
 
         save_state({
             "in_position": False,
             "closed_at": int(time.time()),
             "close_reason": reason,
-            "final_profit": profit
+            "final_profit": profit,
+            "net_pct": net_pct
         })
 
         log_g(f"✅ PROFESSIONAL CLOSE COMPLETED: {reason} | PnL: {profit:.4f} USDT")
@@ -2524,9 +2876,9 @@ def close_market_strict(reason=""):
 
 # =================== PROFESSIONAL TRADING LOOP - OPTIMIZED ===================
 def professional_trading_loop():
-    """الحلقة الرئيسية للتداول المحترف مع تحسينات توفير الموارد"""
+    """الحلقة الرئيسية للتداول المحترف مع جميع التحسينات"""
     
-    log_banner("STARTING ULTIMATE PROFESSIONAL TRADING BOT - RESOURCE SAVER MODE")
+    log_banner("STARTING ULTIMATE PROFESSIONAL TRADING BOT - ENHANCED SCALP SECURITY")
     log_i(f"🤖 Bot Version: {BOT_VERSION}")
     log_i(f"💱 Exchange: {EXCHANGE_NAME.upper()}")
     log_i(f"📈 Symbol: {SYMBOL}")
@@ -2536,8 +2888,9 @@ def professional_trading_loop():
     log_i(f"🎯 Indicators: TradingView/Bybit Precision Mode")
     log_i(f"🛡️ Volatility Protection: {'ACTIVE' if VOLATILITY_PROTECTION else 'INACTIVE'}")
     log_i(f"💾 Resource Saver Mode: {'ACTIVE' if RESOURCE_SAVER_MODE else 'INACTIVE'}")
-    log_i(f"📉 Candles Limit: {MIN_CANDLES} (كان 500)")
-    log_i(f"⏱️ Base Sleep: {BASE_SLEEP}s (كان 5s)")
+    log_i(f"💰 Enhanced Scalp Security: ACTIVE (Confidence: {SCALP_HIGH_CONFIDENCE_THRESHOLD}, Score: {SCALP_MIN_SCORE_ENHANCED})")
+    log_i(f"📉 Candles Limit: {MIN_CANDLES}")
+    log_i(f"⏱️ Base Sleep: {BASE_SLEEP}s")
     
     # عرض إحصائيات البداية
     performance = pro_trade_manager.analyze_trade_performance()
@@ -2559,6 +2912,11 @@ def professional_trading_loop():
                 continue
             
             consecutive_skips = 0
+            
+            # فحص سلامة الطوارئ
+            if not emergency_scalp_safety_check():
+                time.sleep(BASE_SLEEP * 3)
+                continue
             
             # جمع البيانات الأساسية
             balance = balance_usdt()
@@ -2635,59 +2993,63 @@ def professional_trading_loop():
                     signal_side = "sell"
                 
                 if signal_side:
-                    position_size = compute_adaptive_position_size(
-                        balance, current_price, council_data["confidence"], 
-                        council_data.get('analysis', {}).get('price_testing', {}).get('breakout_strength', 'neutral')
-                    )
+                    # 🔼 استخدام النظام المحسن للسكالب
+                    trade_type = council_data.get("trade_type", "scalp")
                     
-                    if position_size > 0:
-                        # ✅ تسجيل إشارة التداول
-                        trading_logger.log_trade_signal(
-                            signal_side, current_price, position_size, council_data
+                    if trade_type == "scalp":
+                        success = execute_enhanced_scalp_trade(
+                            signal_side, current_price, council_data, balance, df
+                        )
+                    else:
+                        # صفقات الترند
+                        position_size = compute_adaptive_position_size(
+                            balance, current_price, council_data["confidence"], 
+                            council_data.get('analysis', {}).get('price_testing', {}).get('breakout_strength', 'neutral')
                         )
                         
-                        success = execute_professional_trade(
-                            signal_side, current_price, position_size, council_data, {
-                                "market_phase": council_data.get('analysis', {}).get('price_testing', {}).get('breakout_strength', 'neutral'),
-                                "volatility": council_data.get('analysis', {}).get('manipulation', {}).get('current_volatility', 0)
-                            }
-                        )
-                        
-                        if success:
-                            STATE.update({
-                                "open": True,
-                                "side": "long" if signal_side == "buy" else "short",
-                                "entry": current_price,
-                                "qty": position_size,
-                                "pnl": 0.0,
-                                "bars": 0,
-                                "trail": None,
-                                "breakeven": None,
-                                "highest_profit_pct": 0.0,
-                                "profit_targets_achieved": 0,
-                                "trade_type": council_data.get('trade_type', 'scalp'),
-                                "entry_reason": signal_reason
-                            })
-                            
-                            # حساب أهداف الربح
-                            atr = council_data.get('indicators', {}).get('atr', 0) or 0.001
-                            market_strength = "strong" if council_data.get('analysis', {}).get('price_testing', {}).get('breakout_strength') == 'strong' else "normal"
-                            STATE["profit_targets"] = profit_manager.calculate_dynamic_tps(
-                                STATE["trade_type"], atr, current_price, STATE["side"], market_strength
+                        if position_size > 0:
+                            success = execute_professional_trade(
+                                signal_side, current_price, position_size, council_data, {
+                                    "market_phase": council_data.get('analysis', {}).get('price_testing', {}).get('breakout_strength', 'neutral'),
+                                    "volatility": council_data.get('analysis', {}).get('manipulation', {}).get('current_volatility', 0)
+                                }
                             )
                             
-                            # ✅ تسجيل فتح الصفقة
-                            trading_logger.log_position_opened(STATE, council_data)
-                            
-                            save_state({
-                                "in_position": True,
-                                "side": signal_side.upper(),
-                                "entry_price": current_price,
-                                "position_qty": position_size,
-                                "opened_at": int(time.time()),
-                                "trade_type": STATE["trade_type"],
-                                "entry_reason": signal_reason
-                            })
+                            if success:
+                                STATE.update({
+                                    "open": True,
+                                    "side": "long" if signal_side == "buy" else "short",
+                                    "entry": current_price,
+                                    "qty": position_size,
+                                    "pnl": 0.0,
+                                    "bars": 0,
+                                    "trail": None,
+                                    "breakeven": None,
+                                    "highest_profit_pct": 0.0,
+                                    "profit_targets_achieved": 0,
+                                    "trade_type": council_data.get('trade_type', 'scalp'),
+                                    "entry_reason": signal_reason
+                                })
+                                
+                                # حساب أهداف الربح
+                                atr = council_data.get('indicators', {}).get('atr', 0) or 0.001
+                                market_strength = "strong" if council_data.get('analysis', {}).get('price_testing', {}).get('breakout_strength') == 'strong' else "normal"
+                                STATE["profit_targets"] = profit_manager.calculate_dynamic_tps(
+                                    STATE["trade_type"], atr, current_price, STATE["side"], market_strength
+                                )
+                                
+                                # ✅ تسجيل فتح الصفقة
+                                trading_logger.log_position_opened(STATE, council_data)
+                                
+                                save_state({
+                                    "in_position": True,
+                                    "side": signal_side.upper(),
+                                    "entry_price": current_price,
+                                    "position_qty": position_size,
+                                    "opened_at": int(time.time()),
+                                    "trade_type": STATE["trade_type"],
+                                    "entry_reason": signal_reason
+                                })
                 else:
                     # ✅ تسجيل أسباب عدم الدخول (بتكرار أقل)
                     if run_full_council or cycle_count % 3 == 0:
@@ -2718,7 +3080,9 @@ STATE = {
     "pnl": 0.0, "bars": 0, "trail": None, "breakeven": None,
     "tp1_done": False, "highest_profit_pct": 0.0,
     "profit_targets_achieved": 0, "trail_active": False,
-    "trade_type": None, "profit_targets": []
+    "trade_type": None, "profit_targets": [],
+    "scalp_target": None, "min_required_pct": None, "expected_gross_pct": None,
+    "enhanced_scalp": False, "approval_reasons": None
 }
 
 # =================== FLASK API (مبسط) ===================
@@ -2729,9 +3093,9 @@ def home():
     portfolio_summary = portfolio_tracker.get_portfolio_summary(balance_usdt())
     return f"""
     <html>
-        <head><title>SUI ULTRA PRO AI BOT - RESOURCE SAVER</title></head>
+        <head><title>SUI ULTRA PRO AI BOT - ENHANCED SCALP SECURITY</title></head>
         <body>
-            <h1>🚀 SUI ULTRA PRO AI BOT - الإصدار المحترف مع نظام توفير الموارد</h1>
+            <h1>🚀 SUI ULTRA PRO AI BOT - الإصدار المحترف مع نظام السكالب الآمن</h1>
             <p><strong>Version:</strong> {BOT_VERSION}</p>
             <p><strong>Exchange:</strong> {EXCHANGE_NAME.upper()}</p>
             <p><strong>Symbol:</strong> {SYMBOL}</p>
@@ -2740,8 +3104,7 @@ def home():
             <p><strong>Indicators:</strong> TradingView/Bybit Precision Mode</p>
             <p><strong>Volatility Protection:</strong> {'🟢 ACTIVE' if VOLATILITY_PROTECTION else '🔴 INACTIVE'}</p>
             <p><strong>Resource Saver:</strong> {'🟢 ACTIVE' if RESOURCE_SAVER_MODE else '🔴 INACTIVE'}</p>
-            <p><strong>Candles Limit:</strong> {MIN_CANDLES} (كان 500)</p>
-            <p><strong>Base Sleep:</strong> {BASE_SLEEP}s (كان 5s)</p>
+            <p><strong>Enhanced Scalp Security:</strong> 🟢 ACTIVE (Confidence: {SCALP_HIGH_CONFIDENCE_THRESHOLD}, Score: {SCALP_MIN_SCORE_ENHANCED})</p>
             <h2>Portfolio Summary</h2>
             <p><strong>Current Balance:</strong> ${portfolio_summary.get('current_balance', 0) if portfolio_summary else 'N/A'}</p>
             <p><strong>Total Profit:</strong> ${portfolio_summary.get('total_profit', 0) if portfolio_summary else 'N/A'}</p>
@@ -2761,8 +3124,9 @@ def health():
         "indicators_mode": "TradingView Precision",
         "volatility_protection": VOLATILITY_PROTECTION,
         "resource_saver_mode": RESOURCE_SAVER_MODE,
-        "candles_limit": MIN_CANDLES,
-        "base_sleep": BASE_SLEEP
+        "enhanced_scalp_security": True,
+        "scalp_confidence_threshold": SCALP_HIGH_CONFIDENCE_THRESHOLD,
+        "scalp_min_score": SCALP_MIN_SCORE_ENHANCED
     })
 
 @app.route("/performance")
@@ -2783,7 +3147,7 @@ def volatility_status():
 # =================== STARTUP ===================
 def startup_sequence():
     """تسلسل بدء التشغيل"""
-    log_banner("PROFESSIONAL SYSTEM INITIALIZATION - RESOURCE SAVER MODE")
+    log_banner("PROFESSIONAL SYSTEM INITIALIZATION - ENHANCED SCALP SECURITY")
     
     # تحميل الحالة السابقة
     loaded_state = load_state()
@@ -2828,7 +3192,7 @@ def startup_sequence():
     except Exception as e:
         log_w(f"Volatility detector test failed: {e}")
     
-    log_g("🚀 ULTIMATE PROFESSIONAL TRADING BOT READY! - RESOURCE SAVER MODE ACTIVE")
+    log_g("🚀 ULTIMATE PROFESSIONAL TRADING BOT READY! - ENHANCED SCALP SECURITY ACTIVE")
     return True
 
 # =================== MAIN EXECUTION ===================
