@@ -15,7 +15,7 @@ services:
       - key: EXCHANGE
         value: bybit
       - key: SYMBOL
-        value: SUI/USDT:USDT
+        value: ASTR/USDT:USDT
       - key: INTERVAL
         value: 15m
       - key: RF_PERIOD
