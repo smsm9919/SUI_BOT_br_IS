@@ -10,9 +10,10 @@ SUI ULTRA PRO AI BOT - الإصدار الذكي المحترف المتكامل
 • TradingView/Bybit Precision Indicators
 • نظام كشف التذبذب المتقدم
 • نظام التسجيل المحترف المتكامل
+• نظام توفير الموارد المحسن
 """
 
-import os, time, math, random, signal, sys, traceback, logging, json
+import os, time, math, random, signal, sys, traceback, logging, json, gc
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
 import pandas as pd
@@ -26,6 +27,13 @@ try:
     from termcolor import colored
 except Exception:
     def colored(t,*a,**k): return t
+
+# =================== إعدادات توفير الموارد ===================
+RESOURCE_SAVER_MODE = True  # 🔽 وضع توفير الموارد
+MIN_CANDLES = 180           # 🔽 أقل عدد شموع للمؤشرات (كان 500)
+BASE_SLEEP = 12             # 🔽 زيادة فترة الانتظار (كان 5)
+NEAR_CLOSE_S = 3            # 🔽 زيادة قليلاً near close (كان 1)
+MAX_LOOP_FREQUENCY = 18     # 🔽 أقصى تردد للمسح (ثانية)
 
 # =================== TRADINGVIEW-STYLE TECHNICAL INDICATORS ===================
 class TradingViewIndicators:
@@ -718,7 +726,7 @@ SHADOW_MODE_DASHBOARD = False
 DRY_RUN = False
 
 # ==== Addon: Logging + Recovery Settings ====
-BOT_VERSION = f"SUI ULTRA PRO AI v10.0 — {EXCHANGE_NAME.upper()} - PROFESSIONAL LOGGER"
+BOT_VERSION = f"SUI ULTRA PRO AI v10.0 — {EXCHANGE_NAME.upper()} - PROFESSIONAL LOGGER + RESOURCE SAVER"
 print("🚀 Booting:", BOT_VERSION, flush=True)
 
 STATE_PATH = "./bot_state.json"
@@ -774,9 +782,9 @@ RESIDUAL_MIN_QTY = float(os.getenv("RESIDUAL_MIN_QTY", 10.0))
 CLOSE_RETRY_ATTEMPTS = 6
 CLOSE_VERIFY_WAIT_S  = 2.0
 
-# Pacing
-BASE_SLEEP   = 5
-NEAR_CLOSE_S = 1
+# Pacing - UPDATED FOR RESOURCE SAVING
+BASE_SLEEP   = 12  # 🔽 كان 5
+NEAR_CLOSE_S = 3   # 🔽 كان 1
 
 # ==== Smart Exit Tuning ===
 TP1_SCALP_PCT      = 0.35/100
@@ -1530,7 +1538,7 @@ def with_retry(fn, tries=3, base_wait=0.4):
             if i == tries-1: raise
             time.sleep(base_wait*(2**i) + random.random()*0.25)
 
-def fetch_ohlcv(limit=600):
+def fetch_ohlcv(limit=MIN_CANDLES):  # 🔽 استخدام MIN_CANDLES بدلاً من 600
     rows = with_retry(lambda: ex.fetch_ohlcv(SYMBOL, timeframe=INTERVAL, limit=limit, params={"type":"swap"}))
     return pd.DataFrame(rows, columns=["time","open","high","low","close","volume"])
 
@@ -1763,6 +1771,50 @@ def golden_zone_check(df, indicators):
         return {'ok': False, 'score': 0}
     except Exception as e:
         return {'ok': False, 'score': 0}
+
+# =================== دوال توفير الموارد الجديدة ===================
+def should_run_analysis():
+    """تحديد إذا كان يجب تشغيل التحليل الكامل أو الاقتصادي"""
+    if not STATE["open"] and RESOURCE_SAVER_MODE:
+        # إذا لا يوجد مركز مفتوح، قلل التحليل (70% تخطي)
+        return random.random() > 0.3  # 30% تشغيل تحليل
+    return True
+
+def quick_analysis(df):
+    """تحليل سريع خفيف للموارد"""
+    try:
+        if len(df) < 50:
+            return {"b": 0, "s": 0, "score_b": 0, "score_s": 0, "confidence": 0}
+        
+        # 🔽 مؤشرات سريعة فقط
+        close = df['close'].astype(float)
+        rsi = tv.tv_rsi(close, 14).iloc[-1]
+        
+        # قرار مبسط بناء على RSI فقط
+        score_b = 0
+        score_s = 0
+        
+        if rsi < 30:
+            score_b = 12
+        elif rsi > 70:
+            score_s = 12
+        
+        return {
+            "b": 1 if score_b > 0 else 0,
+            "s": 1 if score_s > 0 else 0, 
+            "score_b": score_b,
+            "score_s": score_s,
+            "confidence": 0.5,
+            "trade_type": "scalp",
+            "logs": [f"Quick Analysis - RSI: {rsi:.1f}"]
+        }
+    except Exception as e:
+        return {"b": 0, "s": 0, "score_b": 0, "score_s": 0, "confidence": 0}
+
+def optimize_memory():
+    """تحسين استخدام الذاكرة"""
+    if RESOURCE_SAVER_MODE:
+        gc.collect()  # تشغيل جامع القمامة
 
 # =================== ULTRA PROFESSIONAL COUNCIL AI ===================
 def ultra_professional_council_ai(df):
@@ -2435,11 +2487,11 @@ def close_market_strict(reason=""):
         log_e(f"❌ PROFESSIONAL CLOSE FAILED: {e}")
         return False
 
-# =================== PROFESSIONAL TRADING LOOP ===================
+# =================== PROFESSIONAL TRADING LOOP - OPTIMIZED ===================
 def professional_trading_loop():
-    """الحلقة الرئيسية للتداول المحترف مع التسجيل المحسن"""
+    """الحلقة الرئيسية للتداول المحترف مع تحسينات توفير الموارد"""
     
-    log_banner("STARTING ULTIMATE PROFESSIONAL TRADING BOT - PROFESSIONAL LOGGER")
+    log_banner("STARTING ULTIMATE PROFESSIONAL TRADING BOT - RESOURCE SAVER MODE")
     log_i(f"🤖 Bot Version: {BOT_VERSION}")
     log_i(f"💱 Exchange: {EXCHANGE_NAME.upper()}")
     log_i(f"📈 Symbol: {SYMBOL}")
@@ -2448,30 +2500,60 @@ def professional_trading_loop():
     log_i(f"📊 Risk Allocation: {RISK_ALLOC*100}%")
     log_i(f"🎯 Indicators: TradingView/Bybit Precision Mode")
     log_i(f"🛡️ Volatility Protection: {'ACTIVE' if VOLATILITY_PROTECTION else 'INACTIVE'}")
-    log_i(f"📝 Professional Logger: ACTIVE")
+    log_i(f"💾 Resource Saver Mode: {'ACTIVE' if RESOURCE_SAVER_MODE else 'INACTIVE'}")
+    log_i(f"📉 Candles Limit: {MIN_CANDLES} (كان 500)")
+    log_i(f"⏱️ Base Sleep: {BASE_SLEEP}s (كان 5s)")
     
     # عرض إحصائيات البداية
     performance = pro_trade_manager.analyze_trade_performance()
     log_i(f"📈 Historical Performance: Win Rate: {performance.get('win_rate', 0):.1f}% | Total Profit: {performance.get('total_profit', 0):.2f} USDT")
     
+    cycle_count = 0
+    consecutive_skips = 0
+    
     while True:
         try:
+            cycle_count += 1
+            
+            # 🔽 التحقق من وضع توفير الموارد
+            if not should_run_analysis() and not STATE["open"]:
+                consecutive_skips += 1
+                if consecutive_skips % 10 == 0:  # كل 10 تخطيات سجل
+                    log_v(f"💤 Resource saver mode - skip count: {consecutive_skips}")
+                time.sleep(MAX_LOOP_FREQUENCY)
+                continue
+            
+            consecutive_skips = 0
+            
             # جمع البيانات الأساسية
             balance = balance_usdt()
             current_price = price_now()
-            df = fetch_ohlcv(limit=500)  # زيادة الحد لضمان دقة المؤشرات
+            
+            # 🔽 استخدام عدد شموع مخفض
+            df = fetch_ohlcv(limit=MIN_CANDLES)
             
             if df.empty or current_price is None:
                 log_w("📭 No data available - retrying...")
-                time.sleep(BASE_SLEEP)
+                time.sleep(BASE_SLEEP * 2)
                 continue
             
             # تحديث متتبع المحفظة
             portfolio_tracker.update_balance(balance)
             portfolio_summary = portfolio_tracker.get_portfolio_summary(balance)
             
-            # قرار مجلس الإدارة المحترف
-            council_data = ultra_professional_council_ai(df)
+            # 🔽 تحديد إذا كان يجب تشغيل المجلس الكامل
+            run_full_council = True
+            if RESOURCE_SAVER_MODE and not STATE["open"]:
+                # قلل تحليل المجلس عندما لا يوجد مركز مفتوح
+                run_full_council = (time.time() % 300 < 30)  # كل 5 دقائق لمدة 30 ثانية
+            
+            if run_full_council:
+                council_data = ultra_professional_council_ai(df)
+            else:
+                # 🔽 تحليل مبسط عندما لا يكون مطلوباً
+                council_data = quick_analysis(df)
+                log_v("🔽 Quick analysis mode (resource saving)")
+            
             volatility_data = council_data.get('analysis', {}).get('volatility', {})
             
             # تحديث الحالة
@@ -2479,13 +2561,14 @@ def professional_trading_loop():
             STATE["last_ind"] = council_data.get("indicators", {})
             STATE["last_spread_bps"] = orderbook_spread_bps()
             
-            # ✅ التسجيل المحترف لجلسة التداول
-            trading_logger.log_trading_session(
-                balance, portfolio_summary, 
-                council_data.get("indicators", {}), 
-                volatility_data, council_data, 
-                STATE["open"]
-            )
+            # ✅ التسجيل المحترف لجلسة التداول (بتكرار أقل في وضع توفير الموارد)
+            if run_full_council or STATE["open"] or cycle_count % 5 == 0:
+                trading_logger.log_trading_session(
+                    balance, portfolio_summary, 
+                    council_data.get("indicators", {}), 
+                    volatility_data, council_data, 
+                    STATE["open"]
+                )
             
             # إدارة المركز المفتوح
             if STATE["open"]:
@@ -2571,11 +2654,22 @@ def professional_trading_loop():
                                 "entry_reason": signal_reason
                             })
                 else:
-                    # ✅ تسجيل أسباب عدم الدخول
-                    trading_logger.log_no_trade_reasons(council_data, volatility_data)
+                    # ✅ تسجيل أسباب عدم الدخول (بتكرار أقل)
+                    if run_full_council or cycle_count % 3 == 0:
+                        trading_logger.log_no_trade_reasons(council_data, volatility_data)
             
-            # الانتظار للدورة التالية
-            sleep_time = NEAR_CLOSE_S if time_to_candle_close(df) <= 10 else BASE_SLEEP
+            # 🔽 تحديد وقت الانتظار الديناميكي
+            if STATE["open"]:
+                sleep_time = NEAR_CLOSE_S
+            elif RESOURCE_SAVER_MODE:
+                sleep_time = MAX_LOOP_FREQUENCY
+            else:
+                sleep_time = BASE_SLEEP
+                
+            # 🔽 تحسين الذاكرة كل 10 دورات
+            if cycle_count % 10 == 0:
+                optimize_memory()
+                
             time.sleep(sleep_time)
             
         except Exception as e:
@@ -2600,9 +2694,9 @@ def home():
     portfolio_summary = portfolio_tracker.get_portfolio_summary(balance_usdt())
     return f"""
     <html>
-        <head><title>SUI ULTRA PRO AI BOT</title></head>
+        <head><title>SUI ULTRA PRO AI BOT - RESOURCE SAVER</title></head>
         <body>
-            <h1>🚀 SUI ULTRA PRO AI BOT - الإصدار المحترف مع نظام التسجيل المتكامل</h1>
+            <h1>🚀 SUI ULTRA PRO AI BOT - الإصدار المحترف مع نظام توفير الموارد</h1>
             <p><strong>Version:</strong> {BOT_VERSION}</p>
             <p><strong>Exchange:</strong> {EXCHANGE_NAME.upper()}</p>
             <p><strong>Symbol:</strong> {SYMBOL}</p>
@@ -2610,7 +2704,9 @@ def home():
             <p><strong>Position:</strong> {'🟢 OPEN' if STATE['open'] else '🔴 CLOSED'}</p>
             <p><strong>Indicators:</strong> TradingView/Bybit Precision Mode</p>
             <p><strong>Volatility Protection:</strong> {'🟢 ACTIVE' if VOLATILITY_PROTECTION else '🔴 INACTIVE'}</p>
-            <p><strong>Professional Logger:</strong> 🟢 ACTIVE</p>
+            <p><strong>Resource Saver:</strong> {'🟢 ACTIVE' if RESOURCE_SAVER_MODE else '🔴 INACTIVE'}</p>
+            <p><strong>Candles Limit:</strong> {MIN_CANDLES} (كان 500)</p>
+            <p><strong>Base Sleep:</strong> {BASE_SLEEP}s (كان 5s)</p>
             <h2>Portfolio Summary</h2>
             <p><strong>Current Balance:</strong> ${portfolio_summary.get('current_balance', 0) if portfolio_summary else 'N/A'}</p>
             <p><strong>Total Profit:</strong> ${portfolio_summary.get('total_profit', 0) if portfolio_summary else 'N/A'}</p>
@@ -2629,7 +2725,9 @@ def health():
         "position_open": STATE["open"],
         "indicators_mode": "TradingView Precision",
         "volatility_protection": VOLATILITY_PROTECTION,
-        "professional_logger": True
+        "resource_saver_mode": RESOURCE_SAVER_MODE,
+        "candles_limit": MIN_CANDLES,
+        "base_sleep": BASE_SLEEP
     })
 
 @app.route("/performance")
@@ -2650,7 +2748,7 @@ def volatility_status():
 # =================== STARTUP ===================
 def startup_sequence():
     """تسلسل بدء التشغيل"""
-    log_banner("PROFESSIONAL SYSTEM INITIALIZATION - PROFESSIONAL LOGGER ACTIVE")
+    log_banner("PROFESSIONAL SYSTEM INITIALIZATION - RESOURCE SAVER MODE")
     
     # تحميل الحالة السابقة
     loaded_state = load_state()
@@ -2695,7 +2793,7 @@ def startup_sequence():
     except Exception as e:
         log_w(f"Volatility detector test failed: {e}")
     
-    log_g("🚀 ULTIMATE PROFESSIONAL TRADING BOT READY! - PROFESSIONAL LOGGER ACTIVE")
+    log_g("🚀 ULTIMATE PROFESSIONAL TRADING BOT READY! - RESOURCE SAVER MODE ACTIVE")
     return True
 
 # =================== MAIN EXECUTION ===================
