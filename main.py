@@ -35,6 +35,24 @@ BASE_SLEEP = 12             # 🔽 زيادة فترة الانتظار (كان 
 NEAR_CLOSE_S = 3            # 🔽 زيادة قليلاً near close (كان 1)
 MAX_LOOP_FREQUENCY = 18     # 🔽 أقصى تردد للمسح (ثانية)
 
+# ====== POSITION SIZING CONFIG ======
+# أقل كمية وخطوة تقريب لكل رمز (مظبوط لـ SUI)
+MIN_QTY_BY_SYMBOL = {
+    "SUI/USDT:USDT": 1.0,
+    "SUI/USDT": 1.0,
+    "SUIUSDT": 1.0,
+}
+
+# خطوة التقريب لكل رمز (SUI مسموح بعُشر عملة)
+QTY_STEP_BY_SYMBOL = {
+    "SUI/USDT:USDT": 0.1,
+    "SUI/USDT": 0.1, 
+    "SUIUSDT": 0.1,
+}
+
+DEFAULT_MIN_QTY = 1.0
+DEFAULT_QTY_STEP = 0.1
+
 # =================== TRADINGVIEW-STYLE TECHNICAL INDICATORS ===================
 class TradingViewIndicators:
     """مكتبة مؤشرات بنمط TradingView/Bybit الدقيق"""
@@ -302,7 +320,7 @@ class PortfolioTracker:
         self.drawdown = 0
         
     def update_balance(self, current_balance):
-        """تحديث رصيد المحفظة"""
+        """تحديد رصيد المحفظة"""
         try:
             if self.initial_balance is None and current_balance:
                 self.initial_balance = current_balance
@@ -1500,24 +1518,36 @@ def print_position_snapshot(reason="OPEN", color=None):
     except Exception as e:
         log_w(f"SNAPSHOT ERR: {e}")
 
-def _round_amt(q):
-    if q is None: return 0.0
-    try:
-        d = Decimal(str(q))
-        if LOT_STEP and isinstance(LOT_STEP,(int,float)) and LOT_STEP>0:
-            step = Decimal(str(LOT_STEP))
-            d = (d/step).to_integral_value(rounding=ROUND_DOWN)*step
-        prec = int(AMT_PREC) if AMT_PREC and AMT_PREC>=0 else 0
-        d = d.quantize(Decimal(1).scaleb(-prec), rounding=ROUND_DOWN)
-        if LOT_MIN and isinstance(LOT_MIN,(int,float)) and LOT_MIN>0 and d < Decimal(str(LOT_MIN)): return 0.0
-        return float(d)
-    except (InvalidOperation, ValueError, TypeError):
-        return max(0.0, float(q))
+def normalize_qty(symbol: str, qty: float) -> float:
+    """
+    - يقرّب الكمية لمضاعفات step
+    - يتأكد إنها >= min_qty الخاص بالرمز
+    - يرجّع 0.0 لو الكمية فعلاً صغيرة جدًا
+    """
+    if qty is None or qty <= 0:
+        return 0.0
 
-def safe_qty(q): 
-    q = _round_amt(q)
-    if q<=0: log_w(f"qty invalid after normalize → {q}")
-    return q
+    min_qty = MIN_QTY_BY_SYMBOL.get(symbol, DEFAULT_MIN_QTY)
+    step = QTY_STEP_BY_SYMBOL.get(symbol, DEFAULT_QTY_STEP)
+
+    # تقريب لأسفل لأقرب step
+    normalized = math.floor(qty / step) * step
+
+    # نحمي من القيم العجيبة
+    normalized = float(f"{normalized:.6f}")
+
+    if normalized < min_qty:
+        log_w(f"[SIZE] qty {normalized} < min_qty {min_qty} for {symbol} -> skip trade")
+        return 0.0
+
+    log_i(f"[SIZE] Normalized {qty:.4f} -> {normalized:.4f} (min={min_qty}, step={step})")
+    return normalized
+
+def safe_qty(q):
+    """النسخة المحسنة من safe_qty باستخدام normalize_qty"""
+    if q is None or q <= 0:
+        return 0.0
+    return normalize_qty(SYMBOL, q)
 
 def fmt(v, d=6, na="—"):
     try:
@@ -2193,60 +2223,11 @@ class DynamicProfitManager:
 profit_manager = DynamicProfitManager()
 
 # =================== PROFESSIONAL TRADE EXECUTION ===================
-def execute_professional_trade(side, price, qty, council_data, market_analysis):
-    """تنفيذ صفقة محترفة مع تحليل متقدم"""
-    try:
-        if not EXECUTE_ORDERS or DRY_RUN:
-            log_i(f"DRY_RUN: {side.upper()} {qty:.4f} @ {price:.6f}")
-            log_i(f"TRADE TYPE: {council_data.get('trade_type', 'scalp')}")
-            return True
-        
-        if qty <= 0:
-            log_e("❌ كمية غير صالحة للتنفيذ")
-            return False
-        
-        trade_type = council_data.get('trade_type', 'scalp')
-        
-        log_i(f"🎯 PROFESSIONAL TRADE EXECUTION:")
-        log_i(f"   SIDE: {side.upper()}")
-        log_i(f"   TYPE: {trade_type.upper()}")
-        log_i(f"   QTY: {qty:.4f}")
-        log_i(f"   PRICE: {price:.6f}")
-        log_i(f"   CONFIDENCE: {council_data.get('confidence', 0):.2f}")
-        
-        # عرض أسباب الدخول المفصلة
-        log_i(f"   📋 ENTRY REASONS:")
-        for i, log_msg in enumerate(council_data.get('logs', [])[-10:]):
-            log_i(f"      {i+1}. {log_msg}")
-        
-        if MODE_LIVE:
-            exchange_set_leverage(ex, LEVERAGE, SYMBOL)
-            params = exchange_specific_params(side, is_close=False)
-            ex.create_order(SYMBOL, "market", side, qty, None, params)
-        
-        log_g(f"✅ PROFESSIONAL TRADE EXECUTED: {side.upper()} {qty:.4f} @ {price:.6f}")
-        
-        # تسجيل الصفقة مع الأسباب
-        entry_reason = " | ".join(council_data.get('logs', [])[-5:])
-        pro_trade_manager.record_trade(
-            side=side,
-            entry=price,
-            exit_price=price,
-            quantity=qty,
-            profit=0.0,
-            duration=0,
-            reason=entry_reason
-        )
-        
-        return True
-        
-    except Exception as e:
-        log_e(f"❌ PROFESSIONAL TRADE EXECUTION FAILED: {e}")
-        return False
-
 def compute_adaptive_position_size(balance, price, confidence, market_phase):
-    """حساب حجم صفقة متكيف محترف"""
-    base_size = (balance * RISK_ALLOC) / price
+    """حساب حجم صفقة متكيف محترف مع التقريب الصحيح"""
+    
+    # الحساب الأساسي
+    base_size = (balance * RISK_ALLOC * LEVERAGE) / price
     
     # تعديل الحجم بناءً على الثقة
     confidence_multiplier = 0.6 + (confidence * 0.4)  # 0.6 إلى 1.0
@@ -2259,19 +2240,73 @@ def compute_adaptive_position_size(balance, price, confidence, market_phase):
     else:
         market_multiplier = 0.8
     
-    adaptive_size = base_size * confidence_multiplier * market_multiplier
+    raw_qty = base_size * confidence_multiplier * market_multiplier
     
-    # التأكد من أن الحجم ضمن الحدود المعقولة
-    max_position = balance * LEVERAGE * 0.8
-    final_size = min(adaptive_size, max_position / price) if price > 0 else adaptive_size
+    # ✅ التقريب الصحيح باستخدام normalize_qty
+    final_qty = normalize_qty(SYMBOL, raw_qty)
     
     log_i(f"📊 PROFESSIONAL POSITION SIZING:")
-    log_i(f"   Base: {base_size:.4f}")
-    log_i(f"   Confidence Multiplier: {confidence_multiplier:.2f}")
-    log_i(f"   Market Multiplier: {market_multiplier:.2f}")
-    log_i(f"   Final: {final_size:.4f}")
+    log_i(f"   Balance: ${balance:.2f}")
+    log_i(f"   Risk Alloc: {RISK_ALLOC*100}%")
+    log_i(f"   Leverage: {LEVERAGE}x")  
+    log_i(f"   Base Size: {base_size:.4f}")
+    log_i(f"   Raw Qty: {raw_qty:.4f}")
+    log_i(f"   Final Qty: {final_qty:.4f}")
     
-    return safe_qty(final_size)
+    return final_qty
+
+def execute_professional_trade(side, price, qty, council_data, market_analysis):
+    """تنفيذ صفقة محترفة مع تحقق من الكمية"""
+    
+    # ✅ تحقق نهائي من الكمية
+    if qty <= 0:
+        log_e(f"❌ INVALID QUANTITY: {qty} - Skipping trade")
+        return False
+        
+    log_i(f"🎯 PROFESSIONAL TRADE EXECUTION:")
+    log_i(f"   SIDE: {side.upper()}")
+    log_i(f"   QTY: {qty:.4f} SUI")
+    log_i(f"   PRICE: {price:.6f}")
+    log_i(f"   VALUE: ${qty * price:.2f}")
+    log_i(f"   TYPE: {council_data.get('trade_type', 'scalp').upper()}")
+    log_i(f"   CONFIDENCE: {council_data.get('confidence', 0):.2f}")
+    
+    # عرض أسباب الدخول المفصلة
+    log_i(f"   📋 ENTRY REASONS:")
+    for i, log_msg in enumerate(council_data.get('logs', [])[-10:]):
+        log_i(f"      {i+1}. {log_msg}")
+    
+    if not EXECUTE_ORDERS or DRY_RUN:
+        log_i(f"DRY_RUN: {side.upper()} {qty:.4f} @ {price:.6f}")
+        return True
+    
+    if MODE_LIVE:
+        try:
+            exchange_set_leverage(ex, LEVERAGE, SYMBOL)
+            params = exchange_specific_params(side, is_close=False)
+            ex.create_order(SYMBOL, "market", side, qty, None, params)
+            
+            log_g(f"✅ PROFESSIONAL TRADE EXECUTED: {side.upper()} {qty:.4f} @ {price:.6f}")
+            
+            # تسجيل الصفقة مع الأسباب
+            entry_reason = " | ".join(council_data.get('logs', [])[-5:])
+            pro_trade_manager.record_trade(
+                side=side,
+                entry=price,
+                exit_price=price,
+                quantity=qty,
+                profit=0.0,
+                duration=0,
+                reason=entry_reason
+            )
+            
+            return True
+            
+        except Exception as e:
+            log_e(f"❌ PROFESSIONAL TRADE EXECUTION FAILED: {e}")
+            return False
+    
+    return True
 
 # =================== PROFESSIONAL POSITION MANAGEMENT ===================
 def manage_professional_position(df, council_data, current_price):
