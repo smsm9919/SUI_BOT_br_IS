@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-RF Futures Bot — RF-LIVE ONLY (BingX Perp via CCXT)
+RF Futures Bot — BYBIT-LIVE ONLY (Bybit Perp via CCXT)
 • Council PRO Unified Decision System with Candles & Golden Entry
 • Golden Entry + Golden Reversal + Wick Exhaustion
 • Dynamic TP ladder + Breakeven + ATR-trailing
@@ -23,8 +23,8 @@ except Exception:
     def colored(t,*a,**k): return t
 
 # =================== ENV / MODE ===================
-API_KEY = os.getenv("BINGX_API_KEY", "")
-API_SECRET = os.getenv("BINGX_API_SECRET", "")
+API_KEY = os.getenv("BYBIT_API_KEY", "")
+API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 MODE_LIVE = bool(API_KEY and API_SECRET)
 
 SELF_URL = os.getenv("SELF_URL", "") or os.getenv("RENDER_EXTERNAL_URL", "")
@@ -40,7 +40,7 @@ SHADOW_MODE_DASHBOARD = False
 DRY_RUN = False
 
 # ==== Addon: Logging + Recovery Settings ====
-BOT_VERSION = "DOGE Council PRO v4.0 — Candles + Golden System"
+BOT_VERSION = "ASTR Council PRO v4.0 — Candles + Golden System"
 print("🔁 Booting:", BOT_VERSION, flush=True)
 
 STATE_PATH = "./bot_state.json"
@@ -57,19 +57,19 @@ FLOW_SPIKE_Z = 1.60
 CVD_SMOOTH = 8
 
 # =================== SETTINGS ===================
-SYMBOL = os.getenv("SYMBOL", "ASTR/USDT:USDT")
-DISPLAY_SYMBOL = "ASTRUSDT"
-INTERVAL = os.getenv("INTERVAL", "15m")
-LEVERAGE = int(os.getenv("LEVERAGE", 10))
+SYMBOL = os.getenv("SYMBOL", "ASTR/USDT:USDT")  # للاكستشينج CCXT
+DISPLAY_SYMBOL = "ASTRUSDT"                     # للّوج والعرض
+INTERVAL   = os.getenv("INTERVAL", "15m")
+LEVERAGE   = int(os.getenv("LEVERAGE", 10))
 RISK_ALLOC = float(os.getenv("RISK_ALLOC", 0.60))
-POSITION_MODE = os.getenv("BINGX_POSITION_MODE", "oneway")
+POSITION_MODE = os.getenv("BYBIT_POSITION_MODE", "oneway")
 
 # RF Settings
 RF_SOURCE = "close"
 RF_PERIOD = int(os.getenv("RF_PERIOD", 20))
-RF_MULT = float(os.getenv("RF_MULT", 3.5))
+RF_MULT   = float(os.getenv("RF_MULT", 3.5))
 RF_LIVE_ONLY = True
-RF_HYST_BPS = 6.0
+RF_HYST_BPS  = 6.0
 
 # Indicators
 RSI_LEN = 14
@@ -80,14 +80,14 @@ ENTRY_RF_ONLY = False  # Now using Council decision
 MAX_SPREAD_BPS = float(os.getenv("MAX_SPREAD_BPS", 6.0))
 
 # Dynamic TP / trail
-TP1_PCT_BASE = 0.40
-TP1_CLOSE_FRAC = 0.50
-BREAKEVEN_AFTER = 0.30
+TP1_PCT_BASE       = 0.40
+TP1_CLOSE_FRAC     = 0.50
+BREAKEVEN_AFTER    = 0.30
 TRAIL_ACTIVATE_PCT = 1.20
-ATR_TRAIL_MULT = 1.6
+ATR_TRAIL_MULT     = 1.6
 
-TREND_TPS = [0.50, 1.00, 1.80]
-TREND_TP_FRACS = [0.30, 0.30, 0.20]
+TREND_TPS       = [0.50, 1.00, 1.80]
+TREND_TP_FRACS  = [0.30, 0.30, 0.20]
 
 # Dust guard
 FINAL_CHUNK_QTY = float(os.getenv("FINAL_CHUNK_QTY", 40.0))
@@ -95,25 +95,25 @@ RESIDUAL_MIN_QTY = float(os.getenv("RESIDUAL_MIN_QTY", 9.0))
 
 # Strict close
 CLOSE_RETRY_ATTEMPTS = 6
-CLOSE_VERIFY_WAIT_S = 2.0
+CLOSE_VERIFY_WAIT_S  = 2.0
 
 # Pacing
-BASE_SLEEP = 5
+BASE_SLEEP   = 5
 NEAR_CLOSE_S = 1
 
 # ==== Smart Exit Tuning ===
-TP1_SCALP_PCT = 0.35/100
-TP1_TREND_PCT = 0.60/100
+TP1_SCALP_PCT      = 0.35/100
+TP1_TREND_PCT      = 0.60/100
 HARD_CLOSE_PNL_PCT = 1.10/100
-WICK_ATR_MULT = 1.5
-EVX_SPIKE = 1.8
-BM_WALL_PROX_BPS = 5
-TIME_IN_TRADE_MIN = 8
-TRAIL_TIGHT_MULT = 1.20
+WICK_ATR_MULT      = 1.5
+EVX_SPIKE          = 1.8
+BM_WALL_PROX_BPS   = 5
+TIME_IN_TRADE_MIN  = 8
+TRAIL_TIGHT_MULT   = 1.20
 
 # ==== Golden Entry Settings ====
 GOLDEN_ENTRY_SCORE = 6.0
-GOLDEN_ENTRY_ADX = 20.0
+GOLDEN_ENTRY_ADX   = 20.0
 GOLDEN_REVERSAL_SCORE = 6.5
 
 # ==== Execution & Strategy Thresholds ====
@@ -259,6 +259,7 @@ def verify_execution_environment():
     print(f"🔧 EXECUTE_ORDERS: {EXECUTE_ORDERS} | SHADOW_MODE: {SHADOW_MODE_DASHBOARD} | DRY_RUN: {DRY_RUN}", flush=True)
     print(f"🎯 GOLDEN ENTRY: score={GOLDEN_ENTRY_SCORE} | ADX={GOLDEN_ENTRY_ADX}", flush=True)
     print(f"📈 CANDLES: Full patterns + Wick exhaustion + Golden reversal", flush=True)
+    print(f"💰 SYMBOL: {DISPLAY_SYMBOL} on BYBIT", flush=True)
     
     if not EXECUTE_ORDERS:
         print("🟡 WARNING: EXECUTE_ORDERS=False - البوت في وضع التحليل فقط!", flush=True)
@@ -581,12 +582,15 @@ setup_file_logging()
 
 # =================== EXCHANGE ===================
 def make_ex():
-    return ccxt.bingx({
+    return ccxt.bybit({
         "apiKey": API_KEY,
         "secret": API_SECRET,
         "enableRateLimit": True,
         "timeout": 20000,
-        "options": {"defaultType": "swap"}
+        "options": {
+            "defaultType": "swap",
+            "adjustForTimeDifference": True
+        }
     })
 
 ex = make_ex()
@@ -610,7 +614,7 @@ def load_market_specs():
 def ensure_leverage_mode():
     try:
         try:
-            ex.set_leverage(LEVERAGE, SYMBOL, params={"side": "BOTH"})
+            ex.set_leverage(LEVERAGE, SYMBOL, params={"side": "Both"})
             log_g(f"leverage set: {LEVERAGE}x")
         except Exception as e:
             log_w(f"set_leverage warn: {e}")
@@ -856,7 +860,7 @@ def execute_trade_decision(side, price, qty, mode, council_data, gz_data):
 
     try:
         if MODE_LIVE:
-            ex.set_leverage(LEVERAGE, SYMBOL, params={"side": "BOTH"})
+            ex.set_leverage(LEVERAGE, SYMBOL, params={"side": "Both"})
             ex.create_order(SYMBOL, "market", side, qty, None, _params_open(side))
         
         log_g(f"✅ EXECUTED: {side.upper()} {qty:.4f} @ {price:.6f}")
@@ -1070,9 +1074,7 @@ def _params_close():
     بارامترات إغلاق الصفقة (reduceOnly=True) بنفس منطق الكود القديم.
     """
     if POSITION_MODE == "hedge":
-        # لو البوزيشن عندنا long → نقفله بأمر sell على positionSide=Long
-        # لو البوزيشن short → نقفله بأمر buy على positionSide=Short
-        pos_side = STATE.get("side")
+        pos_side = STATE.get("side")  # "long" أو "short"
         return {
             "positionSide": "Long" if pos_side == "long" else "Short",
             "reduceOnly": True,
@@ -1488,37 +1490,25 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     mode='LIVE' if MODE_LIVE else 'PAPER'
-    return f"✅ Council PRO Bot — {DISPLAY_SYMBOL} {INTERVAL} — {mode} — Candles + Golden Entry + Smart Exit"
+    return f"✅ ASTR Council PRO Bot — {DISPLAY_SYMBOL} {INTERVAL} — {mode} — Candles + Golden Entry + Smart Exit"
 
 @app.route("/metrics")
 def metrics():
     return jsonify({
-        "symbol": DISPLAY_SYMBOL, 
-        "ccxt_symbol": SYMBOL,
-        "interval": INTERVAL, 
-        "mode": "live" if MODE_LIVE else "paper",
-        "leverage": LEVERAGE, 
-        "risk_alloc": RISK_ALLOC, 
-        "price": price_now(),
-        "state": STATE, 
-        "compound_pnl": compound_pnl,
-        "entry_mode": "COUNCIL_PRO_GOLDEN", 
-        "wait_for_next_signal": wait_for_next_signal_side,
+        "symbol": DISPLAY_SYMBOL, "interval": INTERVAL, "mode": "live" if MODE_LIVE else "paper",
+        "leverage": LEVERAGE, "risk_alloc": RISK_ALLOC, "price": price_now(),
+        "state": STATE, "compound_pnl": compound_pnl,
+        "entry_mode": "COUNCIL_PRO_GOLDEN", "wait_for_next_signal": wait_for_next_signal_side,
         "guards": {"max_spread_bps": MAX_SPREAD_BPS, "final_chunk_qty": FINAL_CHUNK_QTY}
     })
 
 @app.route("/health")
 def health():
     return jsonify({
-        "ok": True, 
-        "mode": "live" if MODE_LIVE else "paper",
-        "open": STATE["open"], 
-        "side": STATE["side"], 
-        "qty": STATE["qty"],
-        "compound_pnl": compound_pnl, 
-        "timestamp": datetime.utcnow().isoformat(),
-        "entry_mode": "COUNCIL_PRO_GOLDEN", 
-        "wait_for_next_signal": wait_for_next_signal_side
+        "ok": True, "mode": "live" if MODE_LIVE else "paper",
+        "open": STATE["open"], "side": STATE["side"], "qty": STATE["qty"],
+        "compound_pnl": compound_pnl, "timestamp": datetime.utcnow().isoformat(),
+        "entry_mode": "COUNCIL_PRO_GOLDEN", "wait_for_next_signal": wait_for_next_signal_side
     }), 200
 
 def keepalive_loop():
@@ -1553,6 +1543,7 @@ if __name__ == "__main__":
     print(colored(f"GOLDEN ENTRY: score≥{GOLDEN_ENTRY_SCORE} | ADX≥{GOLDEN_ENTRY_ADX}", "yellow"))
     print(colored(f"CANDLES: Full patterns + Wick exhaustion + Golden reversal", "yellow"))
     print(colored(f"EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
+    print(colored(f"EXCHANGE: BYBIT", "yellow"))
     
     logging.info("service starting…")
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
