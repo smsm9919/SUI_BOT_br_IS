@@ -57,7 +57,8 @@ FLOW_SPIKE_Z = 1.60
 CVD_SMOOTH = 8
 
 # =================== SETTINGS ===================
-SYMBOL     = os.getenv("SYMBOL", "ASTR/USDT:USDT")
+SYMBOL = os.getenv("SYMBOL", "ASTR/USDT:USDT")  # للاكستشينج CCXT
+DISPLAY_SYMBOL = "ASTRUSDT"                     # للّوج والعرض
 INTERVAL   = os.getenv("INTERVAL", "15m")
 LEVERAGE   = int(os.getenv("LEVERAGE", 10))
 RISK_ALLOC = float(os.getenv("RISK_ALLOC", 0.60))
@@ -88,9 +89,14 @@ ATR_TRAIL_MULT     = 1.6
 TREND_TPS       = [0.50, 1.00, 1.80]
 TREND_TP_FRACS  = [0.30, 0.30, 0.20]
 
-# Dust guard
+# Dust guard - تحديث الجداول لASTRUSDT
 FINAL_CHUNK_QTY = float(os.getenv("FINAL_CHUNK_QTY", 40.0))
 RESIDUAL_MIN_QTY = float(os.getenv("RESIDUAL_MIN_QTY", 9.0))
+
+# جداول الكمية الدنيا محدثة لASTRUSDT
+MIN_QTY_BY_SYMBOL = {
+    "ASTRUSDT": 10.0,  # أقل كمية لعقد ASTRUSDT على Bybit
+}
 
 # Strict close
 CLOSE_RETRY_ATTEMPTS = 6
@@ -1435,7 +1441,7 @@ def pretty_snapshot(bal, info, ind, spread_bps, reason=None, df=None):
     if LOG_LEGACY:
         left_s = time_to_candle_close(df) if df is not None else 0
         print(colored("─"*100,"cyan"))
-        print(colored(f"📊 {SYMBOL} {INTERVAL} • {'LIVE' if MODE_LIVE else 'PAPER'} • {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC","cyan"))
+        print(colored(f"📊 {DISPLAY_SYMBOL} {INTERVAL} • {'LIVE' if MODE_LIVE else 'PAPER'} • {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC","cyan"))
         print(colored("─"*100,"cyan"))
         print("📈 INDICATORS & RF")
         print(f"   💲 Price {fmt(info.get('price'))} | RF filt={fmt(info.get('filter'))}  hi={fmt(info.get('hi'))} lo={fmt(info.get('lo'))}")
@@ -1461,12 +1467,12 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     mode='LIVE' if MODE_LIVE else 'PAPER'
-    return f"✅ Council PRO Bot — {SYMBOL} {INTERVAL} — {mode} — Candles + Golden Entry + Smart Exit"
+    return f"✅ Council PRO Bot — {DISPLAY_SYMBOL} {INTERVAL} — {mode} — Candles + Golden Entry + Smart Exit"
 
 @app.route("/metrics")
 def metrics():
     return jsonify({
-        "symbol": SYMBOL, "interval": INTERVAL, "mode": "live" if MODE_LIVE else "paper",
+        "symbol": SYMBOL, "display_symbol": DISPLAY_SYMBOL, "interval": INTERVAL, "mode": "live" if MODE_LIVE else "paper",
         "leverage": LEVERAGE, "risk_alloc": RISK_ALLOC, "price": price_now(),
         "state": STATE, "compound_pnl": compound_pnl,
         "entry_mode": "COUNCIL_PRO_GOLDEN", "wait_for_next_signal": wait_for_next_signal_side,
@@ -1509,13 +1515,13 @@ if __name__ == "__main__":
 
     verify_execution_environment()
 
-    print(colored(f"MODE: {'LIVE' if MODE_LIVE else 'PAPER'}  •  {SYMBOL}  •  {INTERVAL}", "yellow"))
+    print(colored(f"MODE: {'LIVE' if MODE_LIVE else 'PAPER'}  •  {DISPLAY_SYMBOL}  •  {INTERVAL}", "yellow"))
     print(colored(f"RISK: {int(RISK_ALLOC*100)}% × {LEVERAGE}x  •  COUNCIL_PRO=ENABLED", "yellow"))
     print(colored(f"GOLDEN ENTRY: score≥{GOLDEN_ENTRY_SCORE} | ADX≥{GOLDEN_ENTRY_ADX}", "yellow"))
     print(colored(f"CANDLES: Full patterns + Wick exhaustion + Golden reversal", "yellow"))
     print(colored(f"EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
     
-    logging.info("service starting…")
+    logging.info(f"service starting… MODE: {'LIVE' if MODE_LIVE else 'PAPER'} — {DISPLAY_SYMBOL} {INTERVAL}")
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     signal.signal(signal.SIGINT,  lambda *_: sys.exit(0))
     
