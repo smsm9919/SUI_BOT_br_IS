@@ -166,6 +166,105 @@ def load_state() -> dict:
         log_w(f"state load failed: {e}")
     return {}
 
+# =============== ADVANCED DECISION LOGGING ===============
+def log_no_trade_decision_extended(reason_code, reason_text, council_data, ind, gz,
+                                   spread_bps, price_now_val, balance_now):
+    """
+    بلوك لوج احترافي لما البوت يرفض الدخول (لا صفقة).
+    لا يغيّر أي منطق، فقط يشرح السبب.
+    """
+    b_score  = council_data.get("score_b", 0.0)
+    s_score  = council_data.get("score_s", 0.0)
+    b_votes  = council_data.get("b", 0)
+    s_votes  = council_data.get("s", 0)
+    c_ind    = council_data.get("ind", {}) or ind or {}
+
+    rsi      = c_ind.get("rsi", 0.0)
+    adx      = c_ind.get("adx", 0.0)
+    di_sp    = c_ind.get("di_spread", 0.0)
+
+    gz_txt = "none"
+    if gz and gz.get("ok"):
+        gz_txt = f"{gz['zone']['type']} (score={gz.get('score',0):.1f})"
+
+    print("\n" + "✖" * 70, flush=True)
+    print("✖ X  NO TRADE  —  REASONS ANALYSIS  X", flush=True)
+    print("✖" * 70, flush=True)
+
+    print(f"1) DECISION STATUS :", flush=True)
+    print(f"   • code   = {reason_code}", flush=True)
+    print(f"   • reason = {reason_text}", flush=True)
+
+    print(f"\n2) COUNCIL STATS :", flush=True)
+    print(f"   • BUY  → votes={b_votes}  score={b_score:.1f}", flush=True)
+    print(f"   • SELL → votes={s_votes}  score={s_score:.1f}", flush=True)
+
+    print(f"\n3) TECHNICAL CONTEXT :", flush=True)
+    print(f"   • RSI={rsi:.1f}  ADX={adx:.1f}  DI_spread={di_sp:.1f}", flush=True)
+    if spread_bps is not None:
+        print(f"   • spread={spread_bps:.2f} bps  (max={MAX_SPREAD_BPS})", flush=True)
+
+    print(f"\n4) STRATEGY ZONES :", flush=True)
+    print(f"   • Golden zone    : {gz_txt}", flush=True)
+
+    if balance_now is not None or price_now_val is not None:
+        print(f"\n5) SNAPSHOT :", flush=True)
+        if price_now_val is not None:
+            print(f"   • price={fmt(price_now_val)}", flush=True)
+        if balance_now is not None:
+            print(f"   • balance={balance_now:.2f} USDT", flush=True)
+
+    print("✖" * 70 + "\n", flush=True)
+
+
+def log_trade_open_summary(side, price, qty, mode, mgmt_cfg, council_data, gz, balance_before):
+    """بلوك لوج كامل عند فتح صفقة جديدة."""
+    side_txt  = "BUY" if side.lower().startswith("b") else "SELL"
+    side_icon = "🟢" if side_txt == "BUY" else "🔴"
+
+    buy_score  = council_data.get("score_b", 0.0)
+    sell_score = council_data.get("score_s", 0.0)
+    votes_b    = council_data.get("b", 0)
+    votes_s    = council_data.get("s", 0)
+
+    tp1_pct         = mgmt_cfg.get("tp1_pct", 0.004) * 100
+    be_activate_pct = mgmt_cfg.get("be_activate_pct", 0.003) * 100
+    trail_activate  = mgmt_cfg.get("trail_activate_pct", 0.012) * 100
+    atr_mult        = mgmt_cfg.get("atr_trail_mult", ATR_TRAIL_MULT)
+    close_aggr      = mgmt_cfg.get("close_aggression", "medium")
+
+    notional = (price or 0.0) * qty * LEVERAGE
+
+    print("\n" + "▓" * 70, flush=True)
+    print("▓ NEW POSITION OPENED — SUMMARY", flush=True)
+    print("▓" * 70, flush=True)
+
+    print(f"1. SIDE      : {side_icon} {side_txt}  ({DISPLAY_SYMBOL})", flush=True)
+    print(f"2. ENTRY     : price={fmt(price)}  qty={qty:.4f}  lev={LEVERAGE}x  notional≈{notional:.2f} USDT", flush=True)
+    print(f"3. MODE      : {mode.upper()}  | close_aggr={close_aggr}", flush=True)
+
+    print(f"4. TP/BE/TRAIL:", flush=True)
+    print(f"   • TP1 at   ≈ {tp1_pct:.2f}%", flush=True)
+    print(f"   • BE arm   ≥ {be_activate_pct:.2f}%", flush=True)
+    print(f"   • TRAIL on ≥ {trail_activate:.2f}%  | ATR_mult={atr_mult}", flush=True)
+
+    print(f"5. COUNCIL   : BUY votes={votes_b} score={buy_score:.1f}  | "
+          f"SELL votes={votes_s} score={sell_score:.1f}", flush=True)
+
+    ind = council_data.get("ind", {})
+    print(f"6. INDICATORS: RSI={ind.get('rsi',0):.1f}  ADX={ind.get('adx',0):.1f}  "
+          f"DI_spread={ind.get('di_spread',0):.1f}", flush=True)
+
+    if gz and gz.get("ok"):
+        print(f"7. GOLDEN    : {gz['zone']['type']}  score={gz['score']:.1f}", flush=True)
+    else:
+        print("7. GOLDEN    : none", flush=True)
+
+    if balance_before is not None:
+        print(f"8. BALANCE   : before={balance_before:.2f} USDT  | risk_alloc={int(RISK_ALLOC*100)}%", flush=True)
+
+    print("▓" * 70 + "\n", flush=True)
+
 # =================== CANDLES MODULE ===================
 def _body(o,c): return abs(c-o)
 def _rng(h,l):  return max(h-l, 1e-12)
@@ -1120,11 +1219,23 @@ def execute_trade_decision(side, price, qty, mode, council_data, gz_data):
         if MODE_LIVE:
             ex.set_leverage(LEVERAGE, SYMBOL, params={"side": "Both"})
             ex.create_order(SYMBOL, "market", side, qty, None, _params_open(side))
-        
+
+            # تأكيد سريع إن في صفقة اتفتحت فعلاً على المنصّة
+            live = fetch_live_position(ex, SYMBOL)
+            if not live.get("ok") or live.get("qty", 0) <= 0:
+                log_w("⚠️ EXCHANGE WARNING: order sent لكن لا توجد صفقة حية مؤكدة بعد الفتح")
+            else:
+                log_i(f"📡 EXCHANGE LIVE POSITION: side={live['side']} qty={live['qty']} entry={fmt(live['entry'])}")
+
         log_g(f"✅ EXECUTED: {side.upper()} {qty:.4f} @ {price:.6f}")
         return True
     except Exception as e:
-        log_e(f"❌ EXECUTION FAILED: {e}")
+        log_e(
+            f"❌ EXECUTION FAILED on {SYMBOL} | side={side} qty={qty:.4f} "
+            f"price={fmt(price)} | error={type(e).__name__}: {e}"
+        )
+        if MODE_LIVE:
+            logging.critical(f"EXCHANGE_EXECUTION_ERROR side={side} qty={qty} price={price} err={e}")
         return False
 
 def setup_trade_management(mode):
@@ -1151,6 +1262,9 @@ def open_market_enhanced(side, qty, price):
     if qty <= 0: 
         log_e("skip open (qty<=0)")
         return False
+
+    # نحتفظ بالرصيد قبل دخول الصفقة لعرضه في اللوج
+    balance_before = balance_usdt()
     
     df = fetch_ohlcv()
     snap = emit_snapshots(ex, SYMBOL, df)
@@ -1202,6 +1316,18 @@ def open_market_enhanced(side, qty, price):
             "trail_active": False,
             "trail_tightened": False,
         })
+
+        # بلوك لوج تفصيلي للصفقة الجديدة
+        log_trade_open_summary(
+            side=side,
+            price=price,
+            qty=qty,
+            mode=mode,
+            mgmt_cfg=management_config,
+            council_data=votes,
+            gz=gz,
+            balance_before=balance_before
+        )
         
         log_g(f"✅ POSITION OPENED: {side.upper()} | mode={mode}")
         return True
@@ -1756,6 +1882,33 @@ def trade_loop_enhanced():
                                 log_i(f"   - {log_msg}")
                     else:
                         reason = "qty<=0"
+            
+            # لوج مخصص لحالات لا توجد صفقة جديدة
+            if not STATE["open"]:
+                if sig is None:
+                    # لا يوجد قرار قوي من المجلس
+                    log_no_trade_decision_extended(
+                        reason_code="NO_SIGNAL",
+                        reason_text="no strong council edge (scores < 8)",
+                        council_data=council_data,
+                        ind=ind,
+                        gz=gz,
+                        spread_bps=spread_bps,
+                        price_now_val=px or info["price"],
+                        balance_now=bal
+                    )
+                elif sig and reason is not None:
+                    # في إشارة لكن تم رفضها (سبريد عالي، انتظار RF... إلخ)
+                    log_no_trade_decision_extended(
+                        reason_code="BLOCKED",
+                        reason_text=reason,
+                        council_data=council_data,
+                        ind=ind,
+                        gz=gz,
+                        spread_bps=spread_bps,
+                        price_now_val=px or info["price"],
+                        balance_now=bal
+                    )
             
             # اللوج الاحترافي
             if LOG_LEGACY:
