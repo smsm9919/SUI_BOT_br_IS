@@ -8,6 +8,7 @@ RF Futures Bot — BYBIT-LIVE ONLY (Bybit Perp via CCXT)
 • Professional Logging & Dashboard
 • SMC Integration: OB + FVG Detection
 • ULTRA CONSERVATIVE ENTRY GATE
+• SMART TREND & TRAP ENGINE
 """
 
 import os, time, math, random, signal, sys, traceback, logging, json
@@ -18,6 +19,7 @@ import numpy as np
 import ccxt
 from flask import Flask, jsonify
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
+from dataclasses import dataclass
 
 try:
     from termcolor import colored
@@ -42,7 +44,7 @@ SHADOW_MODE_DASHBOARD = False
 DRY_RUN = False
 
 # ==== Addon: Logging + Recovery Settings ====
-BOT_VERSION = "ASTR Council PRO v4.0 — Candles + Golden System + SMC + ULTRA CONSERVATIVE GATE"
+BOT_VERSION = "ASTR Council PRO v4.0 — Candles + Golden System + SMC + ULTRA CONSERVATIVE GATE + SMART TREND ENGINE"
 print("🔁 Booting:", BOT_VERSION, flush=True)
 
 STATE_PATH = "./bot_state.json"
@@ -140,6 +142,22 @@ TREND_ATR_MULT = 1.8
 MAX_TRADES_PER_HOUR = 6
 COOLDOWN_SECS_AFTER_CLOSE = 60
 ADX_GATE = 17
+
+# === SMART TREND & TRAP ENGINE — SETTINGS ===
+TREND_MIN_ADX = 20.0          # أقل ADX نعتبره بداية ترند
+TREND_STRONG_ADX = 28.0       # ترند قوي
+VOLUME_SPIKE_MULT = 1.8       # كم مرة أعلى من متوسط الحجم نعتبرها انفجار
+ATR_IMPULSE_MULT = 1.6        # كم مرة أعلى من ATR نعتبرها شمعة دافعة
+
+SWEEP_WICK_FACTOR = 0.6       # نسبة الفتيلة من كامل الشمعة نعتبرها sweep
+FAKE_BREAK_ADX_MAX = 18.0     # لو ADX تحت الرقم ده نعتبر الكسر غالباً وهمي
+CHOP_ATR_PCT = 0.35           # ATR منخفض = سوق هادي
+MIN_SWING_LOOKBACK = 10       # عدد الشموع اللي بنشوف فيها هاي/لو مهم
+
+SMART_TREND_BUY_BOOST = 2.5   # زيادة score عند بداية ترند صاعد نظيف
+SMART_TREND_SELL_BOOST = 2.5  # نفس الكلام للهابط
+TRAP_PENALTY = 3.0            # خصم من score عند فخ واضح
+CHOP_PENALTY = 2.0            # خصم في سوق تذبذب قوي
 
 # =================== PROFESSIONAL LOGGING ===================
 def log_i(msg): print(f"ℹ️ {msg}", flush=True)
@@ -353,6 +371,182 @@ def compute_candles(df):
         "doji": bool(is_doji), "pattern": ",".join(tags) if tags else None
     }
 
+# =================== SMART TREND & TRAP ENGINE ===================
+@dataclass
+class SmartTrendContext:
+    side: str = None              # "BUY" أو "SELL"
+    is_trend_birth: bool = False  # بداية ترند جديدة
+    is_trend_strong: bool = False # ترند قوي مستمر
+    is_trap: bool = False         # فخ/تلاعب واضح
+    is_chop: bool = False         # تذبذب قذر
+    reason: str = ""              # شرح مختصر
+
+class SmartTrendEngine:
+    def __init__(self, logger=None):
+        self.logger = logger
+
+    def _log(self, msg):
+        if self.logger:
+            self.logger.info(msg)
+        else:
+            print(f"🧠 SMART_TREND: {msg}")
+
+    def _get_last_candle(self, df):
+        if len(df) < 1: return None
+        return {
+            'open': float(df['open'].iloc[-1]),
+            'high': float(df['high'].iloc[-1]),
+            'low': float(df['low'].iloc[-1]),
+            'close': float(df['close'].iloc[-1]),
+            'volume': float(df['volume'].iloc[-1])
+        }
+
+    def _get_prev_candle(self, df, n=2):
+        if len(df) < n: return None
+        return {
+            'open': float(df['open'].iloc[-n]),
+            'high': float(df['high'].iloc[-n]),
+            'low': float(df['low'].iloc[-n]),
+            'close': float(df['close'].iloc[-n]),
+            'volume': float(df['volume'].iloc[-n])
+        }
+
+    def _calc_swing_levels(self, df):
+        if len(df) < MIN_SWING_LOOKBACK:
+            return None, None
+        highs = [float(h) for h in df['high'].iloc[-MIN_SWING_LOOKBACK:]]
+        lows  = [float(l) for l in df['low'].iloc[-MIN_SWING_LOOKBACK:]]
+        return (max(highs) if highs else None,
+                min(lows) if lows else None)
+
+    def _is_impulsive_candle(self, candle, atr_value):
+        if not candle or atr_value is None or atr_value == 0:
+            return False
+        body = abs(candle['close'] - candle['open'])
+        return body >= ATR_IMPULSE_MULT * atr_value
+
+    def _volume_spike(self, df):
+        if len(df) < 20:
+            return False
+        vols = [float(v) for v in df['volume'].iloc[-20:]]
+        avg_vol = sum(vols[:-1]) / max(len(vols) - 1, 1)
+        return vols[-1] >= VOLUME_SPIKE_MULT * avg_vol
+
+    def _detect_sweep(self, df):
+        """اكتشاف Sweep للهايات/اللوات + رجوع"""
+        if len(df) < MIN_SWING_LOOKBACK + 2:
+            return None, False
+
+        last = self._get_last_candle(df)
+        prev_swing_high, prev_swing_low = self._calc_swing_levels(df.iloc[:-1])
+
+        o, h, l, c = last['open'], last['high'], last['low'], last['close']
+        full_range = h - l
+        if full_range <= 0:
+            return None, False
+
+        # فتيلة علوية/سفلية كبيرة
+        upper_wick = h - max(o, c)
+        lower_wick = min(o, c) - l
+
+        # sweep للهايات (سيل تراب)
+        if prev_swing_high and h > prev_swing_high and upper_wick >= SWEEP_WICK_FACTOR * full_range and c < prev_swing_high:
+            return "SELL", True
+
+        # sweep لللوات (باي تراب)  
+        if prev_swing_low and l < prev_swing_low and lower_wick >= SWEEP_WICK_FACTOR * full_range and c > prev_swing_low:
+            return "BUY", True
+
+        return None, False
+
+    def _detect_fake_breakout(self, df, ob_zones, fvg_zones, adx):
+        """كسر وهمي لمناطق OB/FVG مع ADX ضعيف"""
+        if len(df) < 1 or adx is None:
+            return None, False
+        if adx > FAKE_BREAK_ADX_MAX:
+            return None, False  # مش سوق ضعيف
+
+        last = self._get_last_candle(df)
+        o, h, l, c = last['open'], last['high'], last['low'], last['close']
+
+        zones = (ob_zones or []) + (fvg_zones or [])
+        for z in zones:
+            side = z.get("side")
+            lo = z.get("low") or z.get("low_ref")
+            hi = z.get("high") or z.get("high_ref")
+            if lo is None or hi is None:
+                continue
+
+            # breakout صعودي وهمي (سيل تراب)
+            if side == "SELL":
+                if h > hi and c <= hi:
+                    return "SELL", True
+
+            # breakout هبوطي وهمي (باي تراب)
+            if side == "BUY":
+                if l < lo and c >= lo:
+                    return "BUY", True
+
+        return None, False
+
+    def _detect_chop(self, atr_value, adx, rf_flat):
+        """اكتشاف التذبذب القذر"""
+        if atr_value is None or adx is None:
+            return False
+
+        # ATR صغير + ADX ضعيف + RF مسطح = تشوب
+        atr_small = atr_value <= CHOP_ATR_PCT * (abs(atr_value) + 1e-9)
+        if adx < TREND_MIN_ADX and rf_flat:
+            return True
+        return False
+
+    def analyze(self, df, atr_value, adx, rsi, rf_trend_side, ob_zones=None, fvg_zones=None, rf_flat=False):
+        """التحليل الرئيسي للترند والفخاخ"""
+        ctx = SmartTrendContext()
+        if len(df) < MIN_SWING_LOOKBACK:
+            ctx.reason = "insufficient_data"
+            return ctx
+
+        last = self._get_last_candle(df)
+        sweep_side, has_sweep = self._detect_sweep(df)
+        fake_side, has_fake = self._detect_fake_breakout(df, ob_zones, fvg_zones, adx)
+        is_impulse = self._is_impulsive_candle(last, atr_value)
+        vol_spike = self._volume_spike(df)
+        is_chop = self._detect_chop(atr_value, adx, rf_flat)
+
+        # 1) بداية ترند جديد
+        if rf_trend_side in ("BUY", "SELL") and is_impulse and vol_spike and adx is not None and adx >= TREND_MIN_ADX and not is_chop:
+            ctx.side = rf_trend_side
+            ctx.is_trend_birth = True
+            ctx.is_trend_strong = adx >= TREND_STRONG_ADX
+            ctx.reason = f"trend_birth[{rf_trend_side}] impulse+volume+adx={adx:.1f}"
+
+        # 2) فخ واضح (sweep أو fake breakout)
+        if has_sweep or has_fake:
+            ctx.is_trap = True
+            trap_side = sweep_side or fake_side
+            ctx.side = trap_side
+            r = []
+            if has_sweep:
+                r.append(f"sweep_{sweep_side}")
+            if has_fake:
+                r.append(f"fake_break_{fake_side}")
+            ctx.reason = "trap:" + "+".join(r)
+
+        # 3) تذبذب قذر
+        if is_chop:
+            ctx.is_chop = True
+            if ctx.reason:
+                ctx.reason += " | "
+            else:
+                ctx.reason = "chop_env"
+
+        self._log(f"analysis: {ctx}")
+        return ctx
+
+# إنشاء المحرك globally
+smart_trend_engine = SmartTrendEngine(logger=logging)
+
 # =================== EXECUTION VERIFICATION ===================
 def verify_execution_environment():
     """التحقق من بيئة التنفيذ عند الإقلاع"""
@@ -360,6 +554,7 @@ def verify_execution_environment():
     print(f"🔧 EXECUTE_ORDERS: {EXECUTE_ORDERS} | SHADOW_MODE: {SHADOW_MODE_DASHBOARD} | DRY_RUN: {DRY_RUN}", flush=True)
     print(f"🎯 GOLDEN ENTRY: score={GOLDEN_ENTRY_SCORE} | ADX={GOLDEN_ENTRY_ADX}", flush=True)
     print(f"📈 CANDLES: Full patterns + Wick exhaustion + Golden reversal", flush=True)
+    print(f"🧠 SMART TREND ENGINE: BOS/CHoCH + OB/FVG + Traps & Liquidity Detection", flush=True)
     print(f"💰 SYMBOL: {DISPLAY_SYMBOL} on BYBIT", flush=True)
     
     if not EXECUTE_ORDERS:
@@ -807,7 +1002,7 @@ def ultra_conservative_gate(council, gz, ind, info):
 
 # =================== ENHANCED COUNCIL VOTING ===================
 def council_votes_pro_enhanced(df):
-    """مجلس تصويت محسّن مع RSI+MA والمناطق الذهبية + الشموع + SMC Zones."""
+    """مجلس تصويت محسّن مع Smart Trend Engine"""
     try:
         ind = compute_indicators(df)
         rsi_ctx = rsi_ma_context(df)
@@ -825,6 +1020,89 @@ def council_votes_pro_enhanced(df):
         plus_di = ind.get('plus_di', 0)
         minus_di = ind.get('minus_di', 0)
         di_spread = abs(plus_di - minus_di)
+        atr = ind.get('atr', 0)
+
+        # ==== SMART TREND & TRAP ENGINE INTEGRATION ====
+        try:
+            # تجهيز بيانات OB/FVG للمحرك
+            ob_zones = []
+            fvg_zones = []
+            
+            # استخلاص OB من SMC context
+            impulse = detect_impulse(df)
+            ob = detect_order_block(df, impulse)
+            if ob:
+                ob_zones.append({
+                    "side": "BUY" if ob["type"] == "bullish_ob" else "SELL",
+                    "low": ob["low"],
+                    "high": ob["high"]
+                })
+            
+            # استخلاص FVG
+            fvg = detect_fvg(df)
+            if fvg:
+                fvg_zones.append({
+                    "side": "BUY" if fvg["type"] == "bullish_fvg" else "SELL",
+                    "low_ref": fvg.get("low_ref"),
+                    "high_ref": fvg.get("high_ref")
+                })
+            
+            # تحديد اتجاه RF (نستخدم إشارة الشموع كبديل)
+            rf_trend_side = None
+            if cd["score_buy"] > cd["score_sell"] + 2.0:
+                rf_trend_side = "BUY"
+            elif cd["score_sell"] > cd["score_buy"] + 2.0:
+                rf_trend_side = "SELL"
+                
+            rf_flat = (abs(cd["score_buy"] - cd["score_sell"]) < 1.0)
+            
+            # تحليل Smart Trend
+            st_ctx = smart_trend_engine.analyze(
+                df=df,
+                atr_value=atr,
+                adx=adx,
+                rsi=rsi_ctx["rsi"],
+                rf_trend_side=rf_trend_side,
+                ob_zones=ob_zones,
+                fvg_zones=fvg_zones,
+                rf_flat=rf_flat
+            )
+            
+            # تطبيق نتائج التحليل على التصويت
+            if st_ctx.is_trend_birth and st_ctx.side in ("BUY", "SELL"):
+                boost = SMART_TREND_BUY_BOOST if st_ctx.side == "BUY" else SMART_TREND_SELL_BOOST
+                if st_ctx.side == "BUY":
+                    score_b += boost
+                    votes_b += 2
+                else:
+                    score_s += boost
+                    votes_s += 2
+                logs.append(f"🚀 TREND_BIRTH {st_ctx.side} +{boost} score | {st_ctx.reason}")
+            
+            if st_ctx.is_trend_strong and st_ctx.side in ("BUY", "SELL"):
+                if st_ctx.side == "BUY":
+                    score_b += 1.0
+                else:
+                    score_s += 1.0
+                logs.append(f"📈 STRONG_TREND {st_ctx.side} +1.0 score")
+            
+            if st_ctx.is_trap and st_ctx.side in ("BUY", "SELL"):
+                if st_ctx.side == "BUY":
+                    score_b = max(0, score_b - TRAP_PENALTY)
+                    logs.append(f"🪤 TRAP DETECTED BUY -{TRAP_PENALTY} | {st_ctx.reason}")
+                else:
+                    score_s = max(0, score_s - TRAP_PENALTY)
+                    logs.append(f"🪤 TRAP DETECTED SELL -{TRAP_PENALTY} | {st_ctx.reason}")
+            
+            if st_ctx.is_chop:
+                score_b = max(0, score_b - CHOP_PENALTY * 0.5)
+                score_s = max(0, score_s - CHOP_PENALTY * 0.5)
+                logs.append(f"🔄 CHOP ENVIRONMENT -{CHOP_PENALTY * 0.5} BUY/SELL")
+                
+        except Exception as e:
+            log_w(f"SmartTrendEngine error: {e}")
+            logs.append(f"SmartTrendEngine error: {e}")
+        # ==== END SMART TREND INTEGRATION ====
 
         # --- ترند ADX/DI ---
         if adx > ADX_TREND_MIN:
@@ -2037,7 +2315,7 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     mode='LIVE' if MODE_LIVE else 'PAPER'
-    return f"✅ ASTR Council PRO Bot — {DISPLAY_SYMBOL} {INTERVAL} — {mode} — Candles + Golden Entry + Smart Exit + SMC + ULTRA CONSERVATIVE GATE"
+    return f"✅ ASTR Council PRO Bot — {DISPLAY_SYMBOL} {INTERVAL} — {mode} — Candles + Golden Entry + Smart Exit + SMC + SMART TREND ENGINE"
 
 @app.route("/metrics")
 def metrics():
@@ -2045,7 +2323,7 @@ def metrics():
         "symbol": DISPLAY_SYMBOL, "interval": INTERVAL, "mode": "live" if MODE_LIVE else "paper",
         "leverage": LEVERAGE, "risk_alloc": RISK_ALLOC, "price": price_now(),
         "state": STATE, "compound_pnl": compound_pnl,
-        "entry_mode": "COUNCIL_PRO_GOLDEN_SMC_ULTRA_CONSERVATIVE", "wait_for_next_signal": wait_for_next_signal_side,
+        "entry_mode": "COUNCIL_PRO_GOLDEN_SMC_SMART_TREND_ENGINE", "wait_for_next_signal": wait_for_next_signal_side,
         "guards": {"max_spread_bps": MAX_SPREAD_BPS, "final_chunk_qty": FINAL_CHUNK_QTY}
     })
 
@@ -2055,7 +2333,7 @@ def health():
         "ok": True, "mode": "live" if MODE_LIVE else "paper",
         "open": STATE["open"], "side": STATE["side"], "qty": STATE["qty"],
         "compound_pnl": compound_pnl, "timestamp": datetime.utcnow().isoformat(),
-        "entry_mode": "COUNCIL_PRO_GOLDEN_SMC_ULTRA_CONSERVATIVE", "wait_for_next_signal": wait_for_next_signal_side
+        "entry_mode": "COUNCIL_PRO_GOLDEN_SMC_SMART_TREND_ENGINE", "wait_for_next_signal": wait_for_next_signal_side
     }), 200
 
 def keepalive_loop():
@@ -2090,7 +2368,7 @@ if __name__ == "__main__":
     print(colored(f"GOLDEN ENTRY: score≥{GOLDEN_ENTRY_SCORE} | ADX≥{GOLDEN_ENTRY_ADX}", "yellow"))
     print(colored(f"CANDLES: Full patterns + Wick exhaustion + Golden reversal", "yellow"))
     print(colored(f"SMC: OB + FVG Detection + Enhanced Exit Logic", "yellow"))
-    print(colored(f"ULTRA CONSERVATIVE GATE: ACTIVE", "green"))
+    print(colored(f"SMART TREND ENGINE: BOS/CHoCH + Traps & Liquidity Detection", "green"))
     print(colored(f"EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
     print(colored(f"EXCHANGE: BYBIT", "yellow"))
     
