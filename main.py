@@ -7,6 +7,7 @@ RF Futures Bot — BYBIT-LIVE ONLY (Bybit Perp via CCXT)
 • Smart Exit Management + Wait-for-next-signal
 • Professional Logging & Dashboard
 • SMC Integration: OB + FVG Detection
+• ULTRA CONSERVATIVE ENTRY GATE
 """
 
 import os, time, math, random, signal, sys, traceback, logging, json
@@ -41,7 +42,7 @@ SHADOW_MODE_DASHBOARD = False
 DRY_RUN = False
 
 # ==== Addon: Logging + Recovery Settings ====
-BOT_VERSION = "ASTR Council PRO v4.0 — Candles + Golden System + SMC"
+BOT_VERSION = "ASTR Council PRO v4.0 — Candles + Golden System + SMC + ULTRA CONSERVATIVE GATE"
 print("🔁 Booting:", BOT_VERSION, flush=True)
 
 STATE_PATH = "./bot_state.json"
@@ -732,6 +733,77 @@ def decide_strategy_mode(df, adx=None, di_plus=None, di_minus=None, rsi_ctx=None
     why = "adx/di_trend" if adx >= ADX_TREND_MIN else ("rsi_trendZ" if rsi_ctx["trendZ"] != "none" else "scalp_default")
     
     return {"mode": mode, "why": why}
+
+# =================== SMART ULTRA-CONSERVATIVE ENTRY GATE ===================
+def ultra_conservative_gate(council, gz, ind, info):
+    """
+    يحدد إذا كانت الصفقة صفقة (قوية جداً) تستحق الدخول.
+    ما فيش LIMIT — البوت يدخل كل صفقة قوية.
+    """
+
+    adx  = ind.get("adx", 0.0)
+    rsi  = ind.get("rsi", 50)
+    di   = ind.get("di_spread", 0.0)
+    vol  = ind.get("volume", 0.0)
+    spr  = info.get("spread_bps", 0.0)
+
+    # --------------------------------
+    # 1) SPREAD Gate
+    # --------------------------------
+    if spr > 7.5:
+        return False, f"spread_block({spr:.2f})"
+
+    # --------------------------------
+    # 2) Golden Zone Strong Entry
+    # --------------------------------
+    if gz and gz.get("ok"):
+        gz_score = gz.get("score", 0.0)
+        if gz_score >= 6.0 and adx >= 20:
+            return True, "golden_zone_strong"
+        # golden zone موجودة لكن ضعيفة
+        # لا نسمح بالدخول هنا
+        return False, "golden_zone_weak"
+
+    # --------------------------------
+    # 3) Strong Council Entry
+    # --------------------------------
+    score_b = council["score_b"]
+    score_s = council["score_s"]
+
+    strong_buy  = score_b >= 7.5 and adx >= 25 and di > 10
+    strong_sell = score_s >= 7.5 and adx >= 25 and di > 10
+
+    if strong_buy:
+        return True, "council_buy_strong"
+    if strong_sell:
+        return True, "council_sell_strong"
+
+    # --------------------------------
+    # 4) OB / FVG / Liquidity / Flow Pressure (من عندك)
+    #    نقرأهم من council logs → لو في 2 إشارات قوية
+    # --------------------------------
+    logs = council.get("logs", [])
+    power_hits = 0
+    power_keywords = ["OB", "FVG", "sweep", "liquidity", "delta", "flow", "breaker"]
+
+    for L in logs:
+        for kw in power_keywords:
+            if kw in L.lower():
+                power_hits += 1
+
+    if power_hits >= 2 and adx >= 22:
+        return True, f"price_action_power({power_hits})"
+
+    # --------------------------------
+    # 5) Volume confirmation
+    # --------------------------------
+    if vol > ind.get("vol_ma", 0) * 1.4 and adx >= 20:
+        return True, "volume_spike_trend"
+
+    # --------------------------------
+    # لو كل ده ما تحققش → لا دخول
+    # --------------------------------
+    return False, "weak_signal"
 
 # =================== ENHANCED COUNCIL VOTING ===================
 def council_votes_pro_enhanced(df):
@@ -1864,24 +1936,32 @@ def trade_loop_enhanced():
                     sig = "sell"
             
             if not STATE["open"] and sig and reason is None:
-                # التحقق من سياسة الانتظار
+                # Gate 1: WAIT FOR NEXT RF
                 allow_wait, wait_reason = wait_gate_allow(df, info)
                 if not allow_wait:
                     reason = wait_reason
                 else:
-                    qty = compute_size(bal, px or info["price"])
-                    if qty > 0:
-                        ok = open_market(sig, qty, px or info["price"])
-                        if ok:
-                            wait_for_next_signal_side = None
-                            # تسجيل قرار المجلس
-                            log_i(f"🎯 COUNCIL DECISION: {sig.upper()} | "
-                                  f"Score B/S: {council_data['score_b']:.1f}/{council_data['score_s']:.1f} | "
-                                  f"Votes B/S: {council_data['b']}/{council_data['s']}")
-                            for log_msg in council_data.get("logs", []):
-                                log_i(f"   - {log_msg}")
+                    # Gate 2: قوة الصفقة الفعلية (Ultra Conservative)
+                    allow_strong, strong_reason = ultra_conservative_gate(
+                        council_data, gz, council_data["ind"], {"spread_bps": spread_bps}
+                    )
+
+                    if not allow_strong:
+                        reason = strong_reason
                     else:
-                        reason = "qty<=0"
+                        qty = compute_size(bal, px or info["price"])
+                        if qty > 0:
+                            ok = open_market(sig, qty, px or info["price"])
+                            if ok:
+                                wait_for_next_signal_side = None
+                                log_g(
+                                    f"🔥 STRONG ENTRY: {sig.upper()} | "
+                                    f"reason={strong_reason} | "
+                                    f"scores(B/S)={council_data['score_b']:.1f}/{council_data['score_s']:.1f} "
+                                    f"| ADX={council_data['ind'].get('adx')}"
+                                )
+                        else:
+                            reason = "qty<=0"
             
             # لوج مخصص لحالات لا توجد صفقة جديدة
             if not STATE["open"]:
@@ -1957,7 +2037,7 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     mode='LIVE' if MODE_LIVE else 'PAPER'
-    return f"✅ ASTR Council PRO Bot — {DISPLAY_SYMBOL} {INTERVAL} — {mode} — Candles + Golden Entry + Smart Exit + SMC"
+    return f"✅ ASTR Council PRO Bot — {DISPLAY_SYMBOL} {INTERVAL} — {mode} — Candles + Golden Entry + Smart Exit + SMC + ULTRA CONSERVATIVE GATE"
 
 @app.route("/metrics")
 def metrics():
@@ -1965,7 +2045,7 @@ def metrics():
         "symbol": DISPLAY_SYMBOL, "interval": INTERVAL, "mode": "live" if MODE_LIVE else "paper",
         "leverage": LEVERAGE, "risk_alloc": RISK_ALLOC, "price": price_now(),
         "state": STATE, "compound_pnl": compound_pnl,
-        "entry_mode": "COUNCIL_PRO_GOLDEN_SMC", "wait_for_next_signal": wait_for_next_signal_side,
+        "entry_mode": "COUNCIL_PRO_GOLDEN_SMC_ULTRA_CONSERVATIVE", "wait_for_next_signal": wait_for_next_signal_side,
         "guards": {"max_spread_bps": MAX_SPREAD_BPS, "final_chunk_qty": FINAL_CHUNK_QTY}
     })
 
@@ -1975,7 +2055,7 @@ def health():
         "ok": True, "mode": "live" if MODE_LIVE else "paper",
         "open": STATE["open"], "side": STATE["side"], "qty": STATE["qty"],
         "compound_pnl": compound_pnl, "timestamp": datetime.utcnow().isoformat(),
-        "entry_mode": "COUNCIL_PRO_GOLDEN_SMC", "wait_for_next_signal": wait_for_next_signal_side
+        "entry_mode": "COUNCIL_PRO_GOLDEN_SMC_ULTRA_CONSERVATIVE", "wait_for_next_signal": wait_for_next_signal_side
     }), 200
 
 def keepalive_loop():
@@ -2010,6 +2090,7 @@ if __name__ == "__main__":
     print(colored(f"GOLDEN ENTRY: score≥{GOLDEN_ENTRY_SCORE} | ADX≥{GOLDEN_ENTRY_ADX}", "yellow"))
     print(colored(f"CANDLES: Full patterns + Wick exhaustion + Golden reversal", "yellow"))
     print(colored(f"SMC: OB + FVG Detection + Enhanced Exit Logic", "yellow"))
+    print(colored(f"ULTRA CONSERVATIVE GATE: ACTIVE", "green"))
     print(colored(f"EXECUTION: {'ACTIVE' if EXECUTE_ORDERS and not DRY_RUN else 'SIMULATION'}", "yellow"))
     print(colored(f"EXCHANGE: BYBIT", "yellow"))
     
